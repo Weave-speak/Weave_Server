@@ -90,9 +90,28 @@ rm -f "$OUT/$NODE_TAR" "$OUT/SHASUMS256.txt"
 # binaries based on the running interpreter, so installing with an older system Node
 # produces a tarball whose dependencies do not match the runtime shipped beside them.
 # Debian 13 ships Node 20, which is exactly this trap.
-echo "Installing production dependencies with the bundled Node"
+echo "Installing dependencies with the bundled Node"
 NODE_BIN="$ROOT/$STAGE/runtime/bin"
-( cd "$STAGE" && PATH="$NODE_BIN:$PATH" "$NODE_BIN/npm" ci --omit=dev --no-audit --no-fund )
+( cd "$STAGE" && PATH="$NODE_BIN:$PATH" "$NODE_BIN/npm" ci --no-audit --no-fund )
+
+# The smoke page needs mediasoup-client bundled for the browser. Both it and esbuild
+# are build-time only, so they are devDependencies and get pruned below — but the
+# bundle has to be produced while they are still present. Without this the release
+# ships a page that loads and then cannot find its own script, which is exactly the
+# tool you reach for when a deployment is not working.
+echo "Bundling mediasoup-client for the smoke page"
+( cd "$STAGE" && PATH="$NODE_BIN:$PATH" "$NODE_BIN/npx" --yes esbuild node_modules/mediasoup-client/lib/index.js --bundle --format=esm --platform=browser --outfile=src/modules/dev-smoke/public/mediasoup-client.js )
+
+SMOKE_BUNDLE="$STAGE/src/modules/dev-smoke/public/mediasoup-client.js"
+[ -s "$SMOKE_BUNDLE" ] || {
+    echo "The smoke bundle was not produced. Refusing to ship an incomplete release." >&2
+    exit 1
+}
+echo "  smoke bundle: $(du -h "$SMOKE_BUNDLE" | cut -f1)"
+
+# Now drop everything that was only needed to build.
+echo "Pruning development dependencies"
+( cd "$STAGE" && PATH="$NODE_BIN:$PATH" "$NODE_BIN/npm" prune --omit=dev --no-audit --no-fund )
 
 # mediasoup downloads a prebuilt worker on install. If that silently failed the tarball
 # would look complete and the server would not start, so check rather than hope.
