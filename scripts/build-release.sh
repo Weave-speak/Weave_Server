@@ -79,12 +79,6 @@ mkdir -p "$STAGE/runtime"
 tar -xJf "$OUT/$NODE_TAR" -C "$STAGE/runtime" --strip-components=1
 rm -f "$OUT/$NODE_TAR" "$OUT/SHASUMS256.txt"
 
-# Trim what a server never needs. npm and npx are not used at runtime — dependencies are
-# already installed — and the docs are several megabytes on a Pi's SD card.
-rm -rf "$STAGE/runtime/lib/node_modules/npm" \
-       "$STAGE/runtime/bin/npm" "$STAGE/runtime/bin/npx" "$STAGE/runtime/bin/corepack" \
-       "$STAGE/runtime/share" "$STAGE/runtime/include"
-
 "$STAGE/runtime/bin/node" -v >/dev/null || {
     echo "The bundled runtime does not execute here — expected when cross-building." >&2
 }
@@ -112,7 +106,7 @@ echo "  mediasoup worker: $(file -b "$WORKER" 2>/dev/null | cut -c1-60)"
 
 # Only now: npm and npx are not used at runtime, and the headers and docs are several
 # megabytes on a Pi's SD card.
-rm -rf "$STAGE/runtime/lib/node_modules/npm"        "$STAGE/runtime/bin/npm" "$STAGE/runtime/bin/npx" "$STAGE/runtime/bin/corepack"        "$STAGE/runtime/share" "$STAGE/runtime/include"
+rm -rf "$STAGE/runtime/lib/node_modules/npm" \n       "$STAGE/runtime/bin/npm" "$STAGE/runtime/bin/npx" "$STAGE/runtime/bin/corepack" \n       "$STAGE/runtime/share" "$STAGE/runtime/include"
 
 # ── Package ──────────────────────────────────────────────────────────────────
 
