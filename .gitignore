@@ -31,3 +31,6 @@ Thumbs.db
 
 # Local smoke-test scratch
 .smoke*/
+
+# Built by `npm run build:smoke`
+src/modules/dev-smoke/public/mediasoup-client.js

@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Weave — smoke test</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313b;
+    --ink: #e6e8ec; --dim: #9aa3b2; --gold: #e8a83a;
+    --ok: #4ec98a; --bad: #e2635f; --warn: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h1 span { color: var(--gold); }
+  .sub { color: var(--dim); margin: 0 0 20px; font-size: 13px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px; margin-bottom: 14px;
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+  input, select {
+    background: #12141a; border: 1px solid var(--line); color: var(--ink);
+    border-radius: 6px; padding: 8px 10px; font: inherit; font-size: 14px;
+  }
+  input { min-width: 180px; }
+  button {
+    background: var(--gold); border: 0; color: #201a08; font: inherit; font-weight: 600;
+    border-radius: 6px; padding: 9px 16px; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 7px; }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .dot.warn { background: var(--warn); } .dot.idle { background: #4a5261; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  code { background: #12141a; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  #log {
+    background: #0f1116; border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+    height: 200px; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap; color: #b9c0cc;
+  }
+  #log .e { color: var(--bad); } #log .w { color: var(--warn); } #log .g { color: var(--ok); }
+  .meter { height: 6px; background: #12141a; border-radius: 3px; overflow: hidden; width: 90px; }
+  .meter i { display: block; height: 100%; background: var(--ok); width: 0; transition: width .08s linear; }
+  .muted { color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Weave <span>smoke test</span></h1>
+  <p class="sub">
+    Proves audio actually flows through this server. Open it in two tabs (or two machines),
+    sign in as two different accounts, and talk. Not the Weave client.
+  </p>
+
+  <div class="panel">
+    <div class="row">
+      <div><label for="u">Username</label><input id="u" autocomplete="username"></div>
+      <div><label for="p">Password</label><input id="p" type="password" autocomplete="current-password"></div>
+      <div><label for="ch">Channel</label><select id="ch"><option>loading…</option></select></div>
+      <div style="align-self:end"><button id="go">Join and talk</button></div>
+      <div style="align-self:end"><button id="stop" class="ghost" disabled>Leave</button></div>
+      <div style="align-self:end" class="muted">
+        <label style="display:flex;gap:6px;align-items:center;margin:0;cursor:pointer">
+          <input type="checkbox" id="tone" style="min-width:auto"> send a test tone instead of a mic
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="justify-content:space-between">
+      <div>
+        <span id="stateDot" class="dot idle"></span><strong id="state">Not connected</strong>
+        <span class="muted" id="cid"></span>
+      </div>
+      <div class="row">
+        <span class="muted">mic</span>
+        <div class="meter"><i id="mic"></i></div>
+        <button id="mute" class="ghost" disabled>Mute</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <table>
+      <thead><tr><th>Peer</th><th>Sending</th><th>You hear</th><th>Level</th></tr></thead>
+      <tbody id="peers"><tr><td colspan="4" class="muted">Nobody else here yet.</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <strong style="font-size:13px">Media</strong>
+      <span class="muted" id="rtp">not connected</span>
+    </div>
+    <div class="muted" id="ice">—</div>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <strong style="font-size:13px">Log</strong>
+      <span class="muted" id="path"></span>
+    </div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script type="module">
+// mediasoup-client is CommonJS, so esbuild wraps it and puts everything on the default
+// export. `import * as` yields a namespace whose only useful member is `default`, which
+// is why Device came back undefined.
+import mediasoupClient from './mediasoup-client.js';
+
+const $ = (id) => document.getElementById(id);
+const origin = location.origin;
+
+function log(msg, cls = '') {
+  const el = $('log');
+  const at = new Date().toISOString().slice(11, 19);
+  el.insertAdjacentHTML('beforeend', `<div class="${cls}">${at}  ${msg}</div>`);
+  el.scrollTop = el.scrollHeight;
+}
+function setState(text, cls) {
+  $('state').textContent = text;
+  $('stateDot').className = `dot ${cls}`;
+}
+
+let ws, device, sendTransport, recvTransport, micProducer, micStream;
+let token = null;
+const consumers = new Map();   // consumerId -> { cid, slot, audio, analyser }
+const peers = new Map();       // cid -> peer
+const pending = new Map();     // type -> resolver
+
+/** Await a specific reply. The smoke test is a script, so request/response reads better here. */
+function rpc(type, payload = {}, replyType) {
+  const want = replyType ?? type;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${want}`)), 10000);
+    pending.set(want, (msg) => { clearTimeout(timer); resolve(msg); });
+    ws.send(JSON.stringify({ type, ...payload }));
+  });
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(origin + path, {
+    ...opts,
+    headers: {
+      ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(opts.headers ?? {}),
+    },
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.message ?? `${res.status} ${path}`);
+  return body;
+}
+
+// Populate the channel list before anyone signs in, so the page is useful immediately.
+(async () => {
+  try {
+    const info = await api('/api/server-info');
+    $('path').textContent = `${info.instance.name} ${info.version} · protocol ${info.protocol.min}-${info.protocol.max}`;
+    if (info.setupRequired) log('This server has no admin yet — run first-run setup first.', 'w');
+  } catch (err) { log(`server-info failed: ${err.message}`, 'e'); }
+})();
+
+async function loadChannels() {
+  const { channels } = await api('/api/channels');
+  $('ch').innerHTML = channels
+    .map((c) => `<option value="${c.id}" ${c.isDefault ? 'selected' : ''}>${c.name}${c.allowVoice ? '' : ' (no voice)'}</option>`)
+    .join('');
+  return channels;
+}
+
+function renderPeers() {
+  const rows = [...peers.values()].map((p) => {
+    const sending = p.producers?.map((x) => x.slot).join(', ') || '—';
+    const heard = [...consumers.values()].filter((c) => c.cid === p.cid).map((c) => c.slot).join(', ') || '—';
+    return `<tr><td><strong>${p.displayName ?? p.username}</strong> ${p.muted ? '🔇' : ''}</td>
+      <td>${sending}</td><td>${heard}</td>
+      <td><div class="meter"><i id="lvl-${p.cid}"></i></div></td></tr>`;
+  });
+  $('peers').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">Nobody else here yet.</td></tr>';
+}
+
+/** Drive a level meter from a live track, so "is audio flowing" is visible not inferred. */
+const audioContexts = [];
+function meter(stream, elementId) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  audioContexts.push(ctx);
+  // Browsers start an AudioContext suspended until a real user gesture. A suspended
+  // context's analyser reports pure silence, which looks exactly like "no audio is
+  // arriving" — so resume it rather than misdiagnosing a working call.
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  const src = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  src.connect(analyser);
+  const data = new Uint8Array(analyser.frequencyBinCount);
+
+  (function tick() {
+    analyser.getByteTimeDomainData(data);
+    let peak = 0;
+    for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
+    const el = document.getElementById(elementId);
+    if (el) el.style.width = `${Math.min(100, (peak / 128) * 300)}%`;
+    requestAnimationFrame(tick);
+  })();
+  return ctx;
+}
+
+async function consumeFrom(cid, slot) {
+  const key = `${cid}:${slot}`;
+  if ([...consumers.values()].some((c) => `${c.cid}:${c.slot}` === key)) return;
+
+  const msg = await rpc('consume', {
+    cid, slot, rtpCapabilities: device.rtpCapabilities,
+  }, 'consumed');
+
+  const consumer = await recvTransport.consume({
+    id: msg.consumerId,
+    producerId: msg.producerId,
+    kind: msg.kind,
+    rtpParameters: msg.rtpParameters,
+  });
+
+  const stream = new MediaStream([consumer.track]);
+  const audio = new Audio();
+  audio.srcObject = stream;
+  audio.autoplay = true;
+  // Autoplay can be blocked until the page has been interacted with; the join click
+  // usually satisfies that, but say so rather than failing silently.
+  audio.play().catch(() => log('Browser blocked audio playback — click the page.', 'w'));
+
+  consumers.set(consumer.id, { cid, slot, audio, consumer });
+  meter(stream, `lvl-${cid}`);
+
+  // Resume only once the track is attached, so the first packets have somewhere to go.
+  await rpc('resumeConsumer', { consumerId: consumer.id }, 'consumerResumed');
+  log(`hearing ${slot} from ${peers.get(cid)?.username ?? cid}`, 'g');
+  renderPeers();
+}
+
+/**
+ * A microphone, or a generated tone.
+ *
+ * The tone is not a toy: it lets you verify a deployment from a machine with no audio
+ * hardware, or one where the browser will not grant capture, and it is a cleaner signal
+ * for "is RTP actually arriving" than hoping someone remembers to speak.
+ */
+async function captureAudio() {
+  const wantTone = $('tone').checked;
+  if (!wantTone) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      log(`microphone unavailable (${err.name}) — sending a test tone instead`, 'w');
+      $('tone').checked = true;
+    }
+  }
+
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const dest = ctx.createMediaStreamDestination();
+
+  osc.type = 'sine';
+  osc.frequency.value = 440;
+  // Audible on a meter, quiet enough not to hurt if someone has headphones on.
+  gain.gain.value = 0.25;
+
+  // Pulse it. A constant tone is indistinguishable from a stuck buffer, whereas a
+  // rhythm proves packets are still arriving.
+  setInterval(() => {
+    const now = ctx.currentTime;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setValueAtTime(0.25, now);
+    gain.gain.linearRampToValueAtTime(0.0, now + 0.35);
+  }, 900);
+
+  osc.connect(gain).connect(dest);
+  osc.start();
+  log('sending a 440 Hz test tone', 'w');
+  return dest.stream;
+}
+
+async function join() {
+  $('go').disabled = true;
+  try {
+    const auth = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username: $('u').value.trim(), password: $('p').value }),
+    });
+    token = auth.token;
+    log(`signed in as ${auth.user.username}`, 'g');
+    await loadChannels();
+
+    setState('Connecting…', 'warn');
+    ws = new WebSocket(origin.replace(/^http/, 'ws'));
+
+    ws.onmessage = async (ev) => {
+      const msg = JSON.parse(ev.data);
+      const waiter = pending.get(msg.type);
+      if (waiter) { pending.delete(msg.type); waiter(msg); }
+
+      switch (msg.type) {
+        case 'hello':
+          $('cid').textContent = ` · incident ${msg.cid}`;
+          break;
+        case 'error':
+          log(`error: ${msg.code} — ${msg.message}`, 'e');
+          break;
+        case 'peer_joined':
+          peers.set(msg.peer.cid, msg.peer);
+          log(`${msg.peer.username} joined`);
+          renderPeers();
+          for (const p of msg.peer.producers ?? []) await consumeFrom(msg.peer.cid, p.slot);
+          break;
+        case 'peer_left':
+          peers.delete(msg.cid);
+          log('a peer left');
+          renderPeers();
+          break;
+        case 'peer_mute_changed': {
+          const p = peers.get(msg.cid);
+          if (p) { p.muted = msg.muted; renderPeers(); }
+          break;
+        }
+        case 'producer_new':
+          log(`${peers.get(msg.cid)?.username ?? msg.cid} started ${msg.slot}`);
+          await consumeFrom(msg.cid, msg.slot);
+          break;
+        case 'producer_closed':
+          for (const [id, c] of consumers) {
+            if (c.cid === msg.cid && c.slot === msg.slot) {
+              c.consumer.close(); c.audio.srcObject = null; consumers.delete(id);
+            }
+          }
+          renderPeers();
+          break;
+        case 'transportFailed':
+          log(`ICE ${msg.state} on ${msg.direction} transport`, 'e');
+          setState(`Media path ${msg.state}`, 'bad');
+          break;
+      }
+    };
+
+    ws.onclose = () => { setState('Disconnected', 'bad'); log('socket closed', 'w'); };
+    ws.onerror = () => log('socket error', 'e');
+    await new Promise((r) => { ws.onopen = r; });
+
+    const joined = await rpc('join', {
+      token, channelId: $('ch').value, protocol: { min: 1, max: 1 },
+    }, 'joined');
+
+    log(`joined ${joined.channel.name} (protocol ${joined.protocol})`, 'g');
+    for (const p of joined.peers) peers.set(p.cid, p);
+    renderPeers();
+
+    device = new mediasoupClient.Device();
+    await device.load({ routerRtpCapabilities: joined.rtpCapabilities });
+
+    // ── send ──
+    const sendInfo = await rpc('createTransport', { direction: 'send' }, 'transportCreated');
+    sendTransport = device.createSendTransport(sendInfo);
+    sendTransport.on('connect', ({ dtlsParameters }, ok, bad) =>
+      rpc('connectTransport', { direction: 'send', dtlsParameters }, 'transportConnected').then(ok, bad));
+    sendTransport.on('produce', ({ kind, rtpParameters }, ok, bad) =>
+      rpc('produce', { slot: 'audio', kind, rtpParameters }, 'produced')
+        .then((m) => ok({ id: m.id }), bad));
+    sendTransport.on('connectionstatechange', (s) => {
+      log(`send transport: ${s}`, s === 'failed' ? 'e' : '');
+      if (s === 'connected') setState('In a call', 'ok');
+      if (s === 'failed') setState('Media failed — check the UDP port forward', 'bad');
+    });
+
+    // ── recv ──
+    const recvInfo = await rpc('createTransport', { direction: 'recv' }, 'transportCreated');
+    recvTransport = device.createRecvTransport(recvInfo);
+    recvTransport.on('connect', ({ dtlsParameters }, ok, bad) =>
+      rpc('connectTransport', { direction: 'recv', dtlsParameters }, 'transportConnected').then(ok, bad));
+
+    micStream = await captureAudio();
+    meter(micStream, 'mic');
+    micProducer = await sendTransport.produce({ track: micStream.getAudioTracks()[0] });
+    log('microphone is being sent', 'g');
+
+    // Consume whoever was already here.
+    for (const p of joined.peers) {
+      for (const prod of p.producers ?? []) await consumeFrom(p.cid, prod.slot);
+    }
+
+    $('stop').disabled = false;
+    $('mute').disabled = false;
+    startStatsPoll();
+  } catch (err) {
+    log(`join failed: ${err.message}`, 'e');
+    setState('Failed', 'bad');
+    $('go').disabled = false;
+  }
+}
+
+let statsTimer = null;
+/**
+ * Report bytes actually sent and received, plus the selected candidate pair.
+ *
+ * This is the ground truth for a deployment check: if bytesReceived is climbing, media
+ * is crossing the SFU regardless of what any meter or icon says. The candidate type also
+ * tells you whether you got a direct path or fell back to TCP.
+ */
+function startStatsPoll() {
+  clearInterval(statsTimer);
+  let lastIn = 0, lastOut = 0;
+
+  statsTimer = setInterval(async () => {
+    try {
+      const [sendStats, recvStats] = await Promise.all([
+        sendTransport?.getStats() ?? new Map(),
+        recvTransport?.getStats() ?? new Map(),
+      ]);
+
+      let bytesOut = 0, bytesIn = 0, packetsIn = 0, lost = 0, pair = null;
+      for (const s of sendStats.values()) {
+        if (s.type === 'outbound-rtp') bytesOut += s.bytesSent ?? 0;
+        if (s.type === 'candidate-pair' && s.state === 'succeeded') pair = s;
+      }
+      for (const s of recvStats.values()) {
+        if (s.type === 'inbound-rtp') {
+          bytesIn += s.bytesReceived ?? 0;
+          packetsIn += s.packetsReceived ?? 0;
+          lost += s.packetsLost ?? 0;
+        }
+        if (!pair && s.type === 'candidate-pair' && s.state === 'succeeded') pair = s;
+      }
+
+      const upRate = Math.max(0, bytesOut - lastOut), downRate = Math.max(0, bytesIn - lastIn);
+      lastOut = bytesOut; lastIn = bytesIn;
+
+      $('rtp').textContent =
+        `sent ${(bytesOut / 1024).toFixed(1)} KB (${(upRate / 1024).toFixed(1)} KB/s) · `
+        + `received ${(bytesIn / 1024).toFixed(1)} KB (${(downRate / 1024).toFixed(1)} KB/s) · `
+        + `${packetsIn} packets in, ${lost} lost`;
+
+      $('ice').textContent = pair
+        ? `path: ${pair.localCandidateId ? '' : ''}rtt ${Math.round((pair.currentRoundTripTime ?? 0) * 1000)}ms`
+        : 'no candidate pair selected yet';
+
+      // Exposed deliberately: a deployment check should be scriptable, not click-only.
+      window.__weaveMedia = { bytesOut, bytesIn, packetsIn, lost, upRate, downRate };
+    } catch { /* transport closed mid-poll */ }
+  }, 1000);
+}
+
+function leave() {
+  clearInterval(statsTimer);
+  try { micProducer?.close(); } catch {}
+  try { sendTransport?.close(); recvTransport?.close(); } catch {}
+  micStream?.getTracks().forEach((t) => t.stop());
+  for (const c of consumers.values()) { c.audio.srcObject = null; }
+  consumers.clear(); peers.clear(); renderPeers();
+  // 4000 marks a deliberate leave so the room is told at once.
+  ws?.close(4000, 'left');
+  setState('Not connected', 'idle');
+  $('go').disabled = false; $('stop').disabled = true; $('mute').disabled = true;
+}
+
+let muted = false;
+$('mute').onclick = () => {
+  muted = !muted;
+  ws.send(JSON.stringify({ type: 'setMute', muted, deafened: false }));
+  $('mute').textContent = muted ? 'Unmute' : 'Mute';
+};
+$('go').onclick = join;
+$('stop').onclick = leave;
+window.addEventListener('beforeunload', () => ws?.close(4000, 'left'));
+</script>
+</body>
+</html>
