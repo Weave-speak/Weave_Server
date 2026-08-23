@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline/promises';
+import { fileURLToPath } from 'node:url';
 import { loadConfig, describeConfig, ConfigError } from '../core/config/index.js';
 import { openDatabase, migrateCore, backup as backupDb, checkIntegrity } from '../db/index.js';
 import { createNullLogger } from '../core/log/index.js';
@@ -171,6 +172,63 @@ const COMMANDS = {
         }
     },
 
+    async modules() {
+        const config = withConfig();
+        const db = withDatabase(config);
+
+        const action = argv[1];
+        const id = argv[2];
+
+        // Read the manifests from disk rather than asking a running server, so this works
+        // when the server is down — or when the module you need to turn off is the reason
+        // it will not start.
+        const dir = fileURLToPath(new URL('../modules', import.meta.url));
+        const installed = fs.existsSync(dir)
+            ? fs.readdirSync(dir, { withFileTypes: true })
+                .filter((e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, 'module.json')))
+                .map((e) => JSON.parse(fs.readFileSync(path.join(dir, e.name, 'module.json'), 'utf8')))
+            : [];
+
+        const stored = new Map(
+            db.prepare("SELECT key, value FROM settings WHERE key LIKE 'module.%.enabled'").all()
+                .map((r) => [r.key.slice(7, -8), JSON.parse(r.value)]),
+        );
+        const isOn = (m) => stored.get(m.id) ?? m.defaultEnabled !== false;
+
+        if (!action || action === 'list') {
+            process.stdout.write('\nModules\n═══════\n\n');
+            for (const m of installed.sort((a, b) => a.id.localeCompare(b.id))) {
+                process.stdout.write(`  ${isOn(m) ? '●' : '○'} ${m.id.padEnd(16)} ${m.name}\n`);
+                if (m.description) process.stdout.write(`      ${m.description}\n`);
+            }
+            process.stdout.write('\n  ● enabled   ○ disabled\n');
+            process.stdout.write('\n  weave modules enable <id>\n  weave modules disable <id>\n\n');
+            db.close();
+            return;
+        }
+
+        if (action !== 'enable' && action !== 'disable') {
+            die(`Unknown action "${action}". Use: list, enable, disable`);
+        }
+        if (!id) die(`Which module? Try: weave modules ${action} <id>`);
+
+        const module = installed.find((m) => m.id === id);
+        if (!module) {
+            die(`No module named "${id}". Installed: ${installed.map((m) => m.id).join(', ') || '(none)'}`);
+        }
+
+        db.prepare(`
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        `).run(`module.${id}.enabled`, JSON.stringify(action === 'enable'));
+        db.close();
+
+        process.stdout.write(`\n${id} will be ${action}d.\n\n`);
+        // The loader reads this at startup. The admin console can do it live; changing the
+        // stored setting from outside the process cannot.
+        process.stdout.write('Restart for it to take effect:  sudo systemctl restart weave\n\n');
+    },
+
     async backup() {
         const config = withConfig();
         const db = withDatabase(config);
@@ -231,6 +289,10 @@ weave ${pkg.version}
     --promote <name>           Make an existing account an administrator.
   weave admin-create           Create an administrator from the command line.
     --user <name>
+
+  weave modules                List modules and whether they are on.
+    enable <id> | disable <id> Change it. Takes effect on restart; the admin
+                               console can do it live.
 
   weave backup [--label x]     Take a consistent snapshot of the database.
   weave config                 Show every setting, what it does, and its current value.
