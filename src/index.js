@@ -23,6 +23,9 @@ import { createAuth, purgeExpiredSessions } from './core/auth/index.js';
 import { SetupState } from './core/setup/index.js';
 import { ensureDefaults } from './core/channels/index.js';
 import { registerCoreRoutes } from './core/http/routes/index.js';
+import { createSfu } from './core/sfu/index.js';
+import { PeerRegistry } from './core/peers/index.js';
+import { registerCoreWsHandlers } from './core/ws/handlers/core.js';
 import { PROTOCOL, CORE_FEATURES } from './protocol/index.js';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -66,7 +69,25 @@ export async function start(env = process.env) {
     const auth = createAuth({ db, config, log });
     const setup = new SetupState({ db, config, log });
 
-    const ws = createWsServer({ registry: wsRegistry, log, config });
+    // ── Media ────────────────────────────────────────────────────────────────
+    const sfu = await createSfu({ config, log });
+    const peers = new PeerRegistry(log);
+
+    const ws = createWsServer({
+        registry: wsRegistry,
+        log,
+        config,
+        onDisconnect: (sock) => {
+            const peer = peers.remove(sock.cid);
+            if (!peer) return;
+            // Closing the transports above stops the media; this tells the room.
+            ws.broadcast('peer_left', { cid: peer.cid, userId: peer.userId }, (other) => {
+                const o = peers.get(other.cid);
+                return o && o.channelId === peer.channelId;
+            });
+            hooks.emit(HOOKS.PEER_LEAVE, { peer });
+        },
+    });
 
     // Small shims so the module context can grant HTTP/WS registration without handing
     // a module the registry itself.
@@ -104,7 +125,8 @@ export async function start(env = process.env) {
         ws: wsFacade,
     });
 
-    registerCoreRoutes({ router, db, config, log, auth, setup, hooks, moduleHost });
+    registerCoreRoutes({ router, db, config, log, auth, setup, hooks, moduleHost, sfu, peers });
+    registerCoreWsHandlers({ registry: wsRegistry, peers, sfu, db, auth, log, hooks, ws });
 
     moduleHost.discover(path.join(import.meta.dirname, 'modules'));
     await moduleHost.loadAll();
@@ -131,8 +153,11 @@ export async function start(env = process.env) {
             bind: config.httpBind,
             modules: moduleHost.enabled,
             routes: router.routes.length,
+            mediaPorts: sfu.ports,
+            announcedAddress: sfu.announcedAddress,
         },
-        `Listening on ${config.httpBind}:${config.httpPort} with ${moduleHost.enabled.length} module(s)`,
+        `Listening on ${config.httpBind}:${config.httpPort} with ${moduleHost.enabled.length} module(s); `
+        + `media on ${sfu.announcedAddress} UDP+TCP ${sfu.ports.join(', ')}`,
     );
 
     // Prints the setup banner if this server has no administrator yet.
@@ -155,6 +180,7 @@ export async function start(env = process.env) {
 
         hooks.emit(HOOKS.SERVER_STOPPING, {});
         await ws.close();
+        await sfu.close();
         await new Promise((resolve) => server.close(resolve));
         // WAL means an unclean exit is survivable, but closing properly checkpoints it.
         db.close();
@@ -206,7 +232,8 @@ export async function start(env = process.env) {
     });
 
     return {
-        config, log, db, settings, hooks, router, wsRegistry, admin, moduleHost, auth, setup, server, ws,
+        config, log, db, settings, hooks, router, wsRegistry, admin, moduleHost, auth, setup,
+        sfu, peers, server, ws,
         migrations: migrationStatus(db),
         stop,
     };

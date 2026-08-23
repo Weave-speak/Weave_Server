@@ -23,7 +23,7 @@ export const LEAVE_CLOSE_CODE = 4000;
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX_MESSAGES = 300;
 
-export function createWsServer({ registry, log, config }) {
+export function createWsServer({ registry, log, config, onDisconnect }) {
     const wss = new WebSocketServer({ noServer: true, maxPayload: 512 * 1024 });
     const sockets = new Set();
 
@@ -119,6 +119,12 @@ export function createWsServer({ registry, log, config }) {
             sockets.delete(ws);
             ws.log.info({ evt: 'ws.close', code, deliberate: code === LEAVE_CLOSE_CODE },
                 `WebSocket closed (${code})`);
+            try {
+                onDisconnect?.(ws, code);
+            } catch (err) {
+                ws.log.error({ evt: 'ws.disconnect_handler_failed', err },
+                    'Disconnect handling threw; the socket is gone either way');
+            }
         });
 
         ws.on('error', (err) => {
