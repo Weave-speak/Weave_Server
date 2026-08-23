@@ -1,0 +1,8 @@
+{
+  "id": "personas",
+  "name": "Join and leave sounds",
+  "version": "1.0.0",
+  "description": "Plays a short sound when someone arrives or leaves. Ships with no sounds — an administrator uploads whatever the group has the right to use.",
+  "requires": [],
+  "defaultEnabled": false
+}

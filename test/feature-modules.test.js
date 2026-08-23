@@ -264,6 +264,81 @@ test('the away opt-out is stored per account', async (t) => {
     assert.equal((await h.call('GET', '/api/afk/opt-out', { token: h.token })).body.optedOut, true);
 });
 
+// ── slash commands ───────────────────────────────────────────────────────────
+
+test('a roll produces a number in range and tells the channel', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const a = await h.connect(h.token);
+    a.send('slash-commands:run', { command: 'roll', args: ['20'] });
+
+    const result = await a.expect('slash-commands:result');
+    assert.equal(result.command, 'roll');
+    assert.equal(result.data.sides, 20);
+    assert.ok(result.data.value >= 1 && result.data.value <= 20, `got ${result.data.value}`);
+    assert.equal(result.by.username, 'admin');
+});
+
+test('a rolls distribute across the range rather than returning a constant', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const a = await h.connect(h.token);
+    const seen = new Set();
+    for (let i = 0; i < 40; i += 1) {
+        a.send('slash-commands:run', { command: 'roll', args: ['6'] });
+        seen.add((await a.expect('slash-commands:result')).data.value);
+    }
+    // Catches the classic off-by-one that pins every roll to one end, and an accidental
+    // constant. Forty rolls of a d6 hitting fewer than three faces would be astonishing.
+    assert.ok(seen.size >= 3, `only saw ${[...seen].join(',')}`);
+    assert.ok(Math.min(...seen) >= 1 && Math.max(...seen) <= 6);
+});
+
+test('a misused command tells only the person who typed it', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const a = await h.connect(h.token);
+    a.send('slash-commands:run', { command: 'roll', args: ['not-a-number'] });
+
+    const err = await a.expect('error');
+    assert.equal(err.code, 'bad_usage');
+    // Broadcasting someone's typo to the whole channel would be noise.
+    assert.match(err.message, /not a whole number/);
+});
+
+test('an unknown command lists what does exist', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const a = await h.connect(h.token);
+    a.send('slash-commands:run', { command: 'summon' });
+
+    const err = await a.expect('error');
+    assert.equal(err.code, 'unknown_command');
+    assert.ok(err.detail.available.includes('roll'));
+});
+
+// ── personas ─────────────────────────────────────────────────────────────────
+
+test('personas ship with an empty library and are off by default', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const info = await h.call('GET', '/api/server-info');
+    // Off by default: a fresh public server should not start making noises at people.
+    assert.ok(!info.body.features.includes('module.personas'));
+
+    await h.call('POST', '/api/admin/modules/personas/enable', { token: h.token });
+    const sounds = await h.call('GET', '/api/personas/sounds', { token: h.token });
+
+    assert.equal(sounds.status, 200);
+    // The previous server baked in a library nobody had the right to redistribute.
+    assert.equal(sounds.body.sounds.length, 0, 'no sounds are shipped');
+});
+
 // ── detachability ────────────────────────────────────────────────────────────
 
 test('disabling a module removes its routes and message types, leaving the rest', async (t) => {

@@ -1,0 +1,8 @@
+{
+  "id": "slash-commands",
+  "name": "Slash commands",
+  "version": "1.0.0",
+  "description": "Small commands such as /roll and /flip. Works on a voice-only server, since results are their own message type rather than chat text.",
+  "requires": [],
+  "defaultEnabled": true
+}
