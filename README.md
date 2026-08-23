@@ -30,11 +30,18 @@ A Raspberry Pi 5 comfortably runs a group of a dozen people.
 
 ## Install
 
+No release has been published yet, so install from a checkout:
+
 ```bash
-curl -fsSL https://github.com/Weave-speak/Weave_Server/releases/latest/download/install.sh -o install.sh
+git clone https://github.com/Weave-speak/Weave_Server.git
+cd Weave_Server
+npm ci --omit=dev
 less install.sh          # read it before you run it
-sudo bash install.sh
+sudo ./install.sh
 ```
+
+Release tarballs will bundle their dependencies and a pinned Node runtime, so a target
+machine needs nothing at all — see `scripts/build-release.sh`.
 
 The installer prints a URL and a one-time setup code. Open the URL, enter the code, and
 create your administrator account. There is no default password, ever.

@@ -75,6 +75,27 @@ jobs:
           done < <(git rev-list "$base..$head")
           exit $bad
 
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The installer runs as root on someone else's machine. An unquoted variable here
+      # is a different class of bug from one in application code.
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning install.sh uninstall.sh scripts/*.sh
+      - name: systemd unit is parseable
+        run: |
+          sudo cp deploy/weave.service /etc/systemd/system/weave.service
+          sudo systemd-analyze verify /etc/systemd/system/weave.service 2>&1 | tee verify.log
+          # Missing ExecStart target is expected here — nothing is installed on a runner.
+          if grep -viE 'command .* is not executable|No such file or directory' verify.log | grep -qiE 'error|failed'; then
+            echo "::error::systemd rejected the unit"; exit 1
+          fi
+          sudo rm -f /etc/systemd/system/weave.service
+
   test:
     name: Test (Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}

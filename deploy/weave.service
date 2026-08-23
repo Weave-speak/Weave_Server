@@ -1,0 +1,85 @@
+# systemd unit for Weave.
+#
+# Installed to /etc/systemd/system/weave.service by install.sh.
+#
+# The sandboxing is deliberate rather than decorative. Weave is a network service that
+# accepts uploads and runs a native media worker, and it needs write access to exactly one
+# directory. Everything else is closed, so a compromise is contained to the data it was
+# always going to have.
+
+[Unit]
+Description=Weave — self-hosted voice, video and text
+Documentation=https://github.com/Weave-speak/Weave_Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=weave
+Group=weave
+
+# The symlink, not a version. An update flips the link and restarts, so this line never
+# changes and a rollback is one flip back.
+WorkingDirectory=/opt/weave/current
+EnvironmentFile=/etc/weave/weave.env
+ExecStart=/opt/weave/current/runtime/bin/node /opt/weave/current/src/index.js
+
+# Give the process a moment to close transports and checkpoint the database. Shutdown
+# does not call process.exit, so it needs long enough for the log transport to flush.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+Restart=on-failure
+RestartSec=5
+# If it fails this often this fast, restarting again will not help — stop and be visibly
+# broken rather than looping quietly.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+# Logs go to the journal; the app also writes rotating JSON files under its data dir.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=weave
+
+# ── Sandbox ──────────────────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RemoveIPC=true
+
+# The only writable path. ProtectSystem=strict makes everything else read-only, including
+# /opt/weave — which is what you want: the running service cannot modify its own code.
+ReadWritePaths=/var/lib/weave
+
+# No capabilities at all. Weave binds ports above 1024 precisely so it never needs
+# CAP_NET_BIND_SERVICE, and config refuses a privileged port for the same reason.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# WebRTC needs UDP and TCP over IP; AF_UNIX is how the mediasoup worker talks to Node.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# A voice server is not a fork bomb. Generous enough for the worker processes and their
+# threads, tight enough to notice if something is wrong.
+LimitNOFILE=65535
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

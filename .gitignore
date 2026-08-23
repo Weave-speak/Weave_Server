@@ -34,3 +34,6 @@ Thumbs.db
 
 # Built by `npm run build:smoke`
 src/modules/dev-smoke/public/mediasoup-client.js
+
+# Stray runtime artefacts
+data-pid.txt
