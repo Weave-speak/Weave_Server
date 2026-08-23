@@ -126,8 +126,9 @@ export function createHttpServer({ config, log, router, auth, onUpgrade }) {
                 session,
                 ip,
                 log: reqLog,
-                json: (status, data) => sendJSON(res, status, data, cors),
-                text: (status, value) => sendText(res, status, value, cors),
+                // extra headers merge over CORS so a route can set Set-Cookie etc.
+                json: (status, data, extra = {}) => sendJSON(res, status, data, { ...cors, ...extra }),
+                text: (status, value, extra = {}) => sendText(res, status, value, { ...cors, ...extra }),
             });
         } catch (err) {
             const status = err instanceof HttpError ? err.status : 500;

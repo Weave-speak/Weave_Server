@@ -6,7 +6,6 @@
 // generated .env.example. When those drift apart people misconfigure servers, so
 // they are not allowed to drift apart.
 
-import os from 'node:os';
 import path from 'node:path';
 
 export class ConfigError extends Error {}
@@ -44,7 +43,7 @@ export const EXPOSURE = Object.freeze({
     PUBLIC: 'public',     // reachable from the internet, must be behind TLS
 });
 
-const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
+const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent'];
 
 export const SCHEMA = [
     {
@@ -57,7 +56,7 @@ export const SCHEMA = [
     },
     {
         key: 'WEAVE_MEDIA_PORT', name: 'mediaPort', parse: asPort, default: 44444,
-        doc: 'Single port carrying all WebRTC media, on UDP and TCP. Forward BOTH from your router. This does NOT go through your reverse proxy.',
+        doc: 'First port carrying WebRTC media, on UDP and TCP. Forward BOTH protocols from your router. This does NOT go through your reverse proxy. With the default single worker this is the only media port you need.',
     },
     {
         key: 'WEAVE_ANNOUNCED_ADDRESS', name: 'announcedAddress', parse: String, default: null,
@@ -98,9 +97,9 @@ export const SCHEMA = [
         doc: 'Truncate IP addresses in logs and diagnostic bundles. On by default; turn off only while debugging.',
     },
     {
-        key: 'WEAVE_SFU_WORKERS', name: 'sfuWorkers', parse: asInt, default: null,
-        doc: 'Number of mediasoup workers. Defaults to one per CPU core. Each worker is one core of media capacity.',
-        check: (v) => v > 0 || 'must be at least 1',
+        key: 'WEAVE_SFU_WORKERS', name: 'sfuWorkers', parse: asInt, default: 1,
+        doc: 'Number of mediasoup workers. Each is one CPU core of media capacity AND one extra media port (WEAVE_MEDIA_PORT + index), which you must also forward. Raise this only when one core is genuinely the bottleneck.',
+        check: (v) => (v > 0 && v <= 32) || 'must be between 1 and 32',
     },
     {
         key: 'WEAVE_DISABLED_MODULES', name: 'disabledModules', parse: asList, default: [],
@@ -137,7 +136,6 @@ export function loadConfig(env = process.env, { cwd = process.cwd() } = {}) {
     }
 
     // Derived values.
-    cfg.sfuWorkers ??= Math.max(1, os.availableParallelism?.() ?? os.cpus().length);
     cfg.behindTls ??= cfg.exposure === EXPOSURE.PUBLIC;
     cfg.dataDir = path.resolve(cwd, cfg.dataDir);
     cfg.logDir = path.resolve(cwd, cfg.logDir);
@@ -145,6 +143,9 @@ export function loadConfig(env = process.env, { cwd = process.cwd() } = {}) {
     cfg.uploadsDir = path.join(cfg.dataDir, 'uploads');
     cfg.backupsDir = path.join(cfg.dataDir, 'backups');
     cfg.warnings = [];
+    // Derived so the installer, `weave doctor` and the admin UI can all state exactly
+    // which ports must be forwarded without recomputing the rule.
+    cfg.mediaPorts = Array.from({ length: cfg.sfuWorkers }, (_, i) => cfg.mediaPort + i);
 
     // A public server without TLS would set session cookies without Secure, i.e. ship
     // credentials in clear text across the internet. Refuse to start rather than warn.

@@ -20,6 +20,9 @@ import { createWsServer } from './core/ws/server.js';
 import { AdminRegistry } from './core/admin/registry.js';
 import { ModuleHost } from './core/modules/loader.js';
 import { createAuth, purgeExpiredSessions } from './core/auth/index.js';
+import { SetupState } from './core/setup/index.js';
+import { ensureDefaults } from './core/channels/index.js';
+import { registerCoreRoutes } from './core/http/routes/index.js';
 import { PROTOCOL, CORE_FEATURES } from './protocol/index.js';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -52,6 +55,7 @@ export async function start(env = process.env) {
     const db = openDatabase(config, log);
     migrateCore(db, log);
     purgeExpiredSessions(db);
+    ensureDefaults(db, log);
 
     // ── Core services ────────────────────────────────────────────────────────
     const settings = new Settings(db, log);
@@ -60,6 +64,7 @@ export async function start(env = process.env) {
     const wsRegistry = new WsRegistry(log);
     const admin = new AdminRegistry();
     const auth = createAuth({ db, config, log });
+    const setup = new SetupState({ db, config, log });
 
     const ws = createWsServer({ registry: wsRegistry, log, config });
 
@@ -99,6 +104,8 @@ export async function start(env = process.env) {
         ws: wsFacade,
     });
 
+    registerCoreRoutes({ router, db, config, log, auth, setup, hooks, moduleHost });
+
     moduleHost.discover(path.join(import.meta.dirname, 'modules'));
     await moduleHost.loadAll();
 
@@ -128,10 +135,14 @@ export async function start(env = process.env) {
         `Listening on ${config.httpBind}:${config.httpPort} with ${moduleHost.enabled.length} module(s)`,
     );
 
-    if (countAdmins() === 0) {
-        log.warn({ evt: 'server.setup_required' },
-            'No administrator account exists yet — first-run setup is required.');
-    }
+    // Prints the setup banner if this server has no administrator yet.
+    setup.begin({
+        httpPort: config.httpPort,
+        httpBind: config.httpBind,
+        instanceName: config.instanceName,
+        version: pkg.version,
+        quiet: config.logLevel === 'silent',
+    });
 
     hooks.emit(HOOKS.SERVER_READY, { config, version: pkg.version });
 
@@ -195,7 +206,7 @@ export async function start(env = process.env) {
     });
 
     return {
-        config, log, db, settings, hooks, router, wsRegistry, admin, moduleHost, auth, server, ws,
+        config, log, db, settings, hooks, router, wsRegistry, admin, moduleHost, auth, setup, server, ws,
         migrations: migrationStatus(db),
         stop,
     };
