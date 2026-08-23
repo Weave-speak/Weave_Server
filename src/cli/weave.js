@@ -61,20 +61,40 @@ function withDatabase(config) {
     }
 }
 
+/**
+ * Read one line, hiding it if asked.
+ *
+ * When stdin is not a terminal — a pipe, a heredoc, an automated install — this reads a
+ * line rather than prompting. That is what makes these commands scriptable without a
+ * --password flag, which would put the password in the process list for anyone running
+ * `ps` at the wrong moment.
+ */
 async function ask(question, { silent = false } = {}) {
+    if (!process.stdin.isTTY) {
+        const piped = readline.createInterface({ input: process.stdin, terminal: false });
+        // eslint-disable-next-line no-unreachable-loop -- one line is all we want
+        for await (const line of piped) {
+            piped.close();
+            return line.trim();
+        }
+        die(`Nothing on stdin for: ${question.trim()}`);
+    }
+
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
     if (!silent) {
         const answer = await rl.question(question);
         rl.close();
         return answer.trim();
     }
-    // Node's readline has no built-in masking; muting the output stream is the usual way.
+
+    // readline has no masking of its own; muting the output stream is the usual approach.
     process.stdout.write(question);
     rl.output.write = () => {};
     const answer = await rl.question('');
     rl.output.write = process.stdout.write.bind(process.stdout);
     rl.close();
-    process.stdout.write('\n');
+    // The typed newline was swallowed with the input, so put one back.
+    console.log();
     return answer.trim();
 }
 
