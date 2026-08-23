@@ -254,11 +254,32 @@ export async function start(env = process.env) {
     };
 }
 
-// Only auto-start when run directly, so tests can import and drive this.
-// Compare real file URLs. Hand-building "file://" + a path gets the slash count wrong
-// on Windows — file://D:/x rather than file:///D:/x — so the guard silently never
-// fires and `node src/index.js` starts nothing at all.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * Is this file the program's entry point?
+ *
+ * Only auto-start when run directly, so tests can import and drive this. Both halves of
+ * the comparison are load-bearing, and both have already been wrong once.
+ *
+ * `pathToFileURL`, because hand-building "file://" + a path gets the slash count wrong on
+ * Windows — file://D:/x rather than file:///D:/x — and the guard silently never fires.
+ *
+  * `fs.realpathSync`, because the installed layout puts the code behind a symlink:
+ * /opt/weave/current -> releases/<version>, so that an upgrade is a symlink flip and a
+ * rollback is one flip back. Node resolves symlinks for `import.meta.url` but leaves
+ * `process.argv[1]` exactly as written, so the two disagree, the process starts, does
+ * nothing, and exits 0. systemd reports that as "Deactivated successfully".
+ */
+function isEntryPoint() {
+    if (!process.argv[1]) return false;
+    try {
+        return import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href;
+    } catch {
+        // A path that cannot be resolved is not one we were started from.
+        return false;
+    }
+}
+
+if (isEntryPoint()) {
     start().catch((err) => {
         process.stderr.write(`Failed to start: ${err?.stack ?? err}\n`);
         process.exit(1);
