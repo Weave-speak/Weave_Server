@@ -138,7 +138,7 @@ export async function start(env = process.env) {
         ws: wsFacade,
     });
 
-    registerCoreRoutes({ router, db, config, log, auth, setup, hooks, moduleHost, sfu, peers });
+    registerCoreRoutes({ router, db, config, log, auth, setup, hooks, moduleHost, sfu, peers, settings });
     registerCoreWsHandlers({ registry: wsRegistry, peers, sfu, db, auth, log, hooks, ws });
 
     moduleHost.discover(path.join(import.meta.dirname, 'modules'));

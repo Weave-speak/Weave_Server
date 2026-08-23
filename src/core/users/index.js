@@ -11,6 +11,10 @@
 
 import crypto from 'node:crypto';
 import { hash as argonHash, verify as argonVerify } from '@node-rs/argon2';
+import {
+    isQuestionId, normaliseAnswer, decoyQuestionFor, questionText,
+    MIN_ANSWER_LENGTH, MAX_ANSWER_LENGTH,
+} from '../auth/questions.js';
 
 export class UserError extends Error {
     constructor(message, field) {
@@ -74,6 +78,43 @@ export function validatePassword(password) {
     return value;
 }
 
+export function validateSecurityAnswer(answer) {
+    const value = normaliseAnswer(answer);
+    if (value.length < MIN_ANSWER_LENGTH) {
+        throw new UserError('Your answer is too short.', 'securityAnswer');
+    }
+    if (value.length > MAX_ANSWER_LENGTH) {
+        throw new UserError(`Your answer must be ${MAX_ANSWER_LENGTH} characters or fewer.`, 'securityAnswer');
+    }
+    return value;
+}
+
+export function validateQuestionId(id) {
+    if (!isQuestionId(id)) {
+        throw new UserError('Choose one of the listed questions.', 'securityQuestion');
+    }
+    return id;
+}
+
+/**
+ * Which question to ask when someone says they have forgotten their password.
+ *
+ * A username with no account still gets a question — see decoyQuestionFor. Returning an
+ * error here instead would turn this endpoint into a membership directory for a private
+ * server, which is precisely what invite-only registration exists to prevent.
+ */
+export function recoveryQuestionFor(db, username, salt) {
+    const row = db.prepare('SELECT recovery_question FROM users WHERE username_lower = ?')
+        .get(normalise(username));
+
+    if (row?.recovery_question && isQuestionId(row.recovery_question)) {
+        return { id: row.recovery_question, text: questionText(row.recovery_question) };
+    }
+    // Covers both "no such account" and "an older account with a passphrase and no
+    // question". Neither case may be distinguishable from the outside.
+    return decoyQuestionFor(username, salt);
+}
+
 export function validateRecovery(phrase) {
     const value = String(phrase ?? '').trim();
     if (value.length < LIMITS.RECOVERY_MIN) {
@@ -110,7 +151,9 @@ const PUBLIC_COLUMNS = `
 const toUser = (row) => (row ? { ...row, isAdmin: row.isAdmin === 1 } : null);
 
 export async function createUser(db, {
-    username, displayName, password, recoveryPhrase, isAdmin = false, avatar = null,
+    username, displayName, password, recoveryPhrase,
+    securityQuestion = null, securityAnswer = null,
+    isAdmin = false, avatar = null,
 }) {
     const name = validateUsername(username);
     const display = validateDisplayName(displayName || name);
@@ -123,13 +166,26 @@ export async function createUser(db, {
     }
 
     const passwordHash = await argonHash(password);
-    const recoveryHash = recoveryPhrase ? await argonHash(validateRecovery(recoveryPhrase)) : null;
+
+    // Two ways to be able to get back in: a chosen question with an answer, or a legacy
+    // passphrase. Both end up in the same hashed column; the question id is what says
+    // which one it is.
+    let recoveryHash = null;
+    let questionId = null;
+    if (securityQuestion || securityAnswer) {
+        questionId = validateQuestionId(securityQuestion);
+        recoveryHash = await argonHash(validateSecurityAnswer(securityAnswer));
+    } else if (recoveryPhrase) {
+        recoveryHash = await argonHash(validateRecovery(recoveryPhrase));
+    }
+
     const id = crypto.randomUUID();
 
     db.prepare(`
-        INSERT INTO users (id, username, username_lower, display_name, password_hash, recovery_hash, avatar, is_admin)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, name, lower, display, passwordHash, recoveryHash, avatar, isAdmin ? 1 : 0);
+        INSERT INTO users (id, username, username_lower, display_name, password_hash,
+                           recovery_hash, recovery_question, avatar, is_admin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, name, lower, display, passwordHash, recoveryHash, questionId, avatar, isAdmin ? 1 : 0);
 
     return getUserById(db, id);
 }
@@ -156,14 +212,28 @@ export async function verifyPassword(db, username, password) {
     return getUserById(db, row.id);
 }
 
-export async function verifyRecovery(db, username, phrase) {
-    const row = db.prepare('SELECT id, recovery_hash, is_disabled FROM users WHERE username_lower = ?')
+/**
+ * Check a security answer, or a legacy passphrase.
+ *
+ * Always performs a verification, even with no account and no stored hash, so that a
+ * missing user costs the same as a wrong answer. Without that, response time alone
+ * reveals which usernames exist.
+ */
+export async function verifyRecovery(db, username, answer, questionId = null) {
+    const row = db.prepare('SELECT id, recovery_hash, recovery_question, is_disabled FROM users WHERE username_lower = ?')
         .get(normalise(username));
 
-    const ok = await argonVerify(row?.recovery_hash ?? DUMMY_HASH, String(phrase ?? '').trim())
-        .catch(() => false);
+    // An account with a question expects a normalised answer; one without is a legacy
+    // passphrase, compared as typed apart from trimming.
+    const hasQuestion = Boolean(row?.recovery_question);
+    const candidate = hasQuestion ? normaliseAnswer(answer) : String(answer ?? '').trim();
+
+    const ok = await argonVerify(row?.recovery_hash ?? DUMMY_HASH, candidate).catch(() => false);
 
     if (!row || !row.recovery_hash || !ok || row.is_disabled) return null;
+    // Answering a different question than the one stored must not succeed.
+    if (hasQuestion && questionId && questionId !== row.recovery_question) return null;
+
     return getUserById(db, row.id);
 }
 
@@ -174,7 +244,15 @@ export async function setPassword(db, userId, password) {
 
 export async function setRecovery(db, userId, phrase) {
     const hashed = await argonHash(validateRecovery(phrase));
-    db.prepare('UPDATE users SET recovery_hash = ? WHERE id = ?').run(hashed, userId);
+    db.prepare('UPDATE users SET recovery_hash = ?, recovery_question = NULL WHERE id = ?')
+        .run(hashed, userId);
+}
+
+export async function setSecurityQuestion(db, userId, questionId, answer) {
+    const id = validateQuestionId(questionId);
+    const hashed = await argonHash(validateSecurityAnswer(answer));
+    db.prepare('UPDATE users SET recovery_hash = ?, recovery_question = ? WHERE id = ?')
+        .run(hashed, id, userId);
 }
 
 export function countAdmins(db) {

@@ -17,7 +17,9 @@ import {
     createUser, verifyPassword, verifyRecovery, setPassword,
     UserError, getUserById, touchLastSeen, normalise,
     validateUsername, validateDisplayName, validatePassword, validateRecovery,
+    validateQuestionId, validateSecurityAnswer, recoveryQuestionFor,
 } from '../../users/index.js';
+import { SECURITY_QUESTIONS, normaliseAnswer } from '../../auth/questions.js';
 import { checkInvite, redeemInvite, InviteError } from '../../invites/index.js';
 import { revokeAllForUser } from '../../auth/index.js';
 
@@ -48,7 +50,7 @@ async function penalise(limiter, keys) {
 /** Never distinguish "no such account" from "wrong password" to the caller. */
 const BAD_CREDENTIALS = 'Username or password is not correct.';
 
-export function registerAuthRoutes({ router, db, log, auth, setup }) {
+export function registerAuthRoutes({ router, db, log, auth, setup, settings }) {
     const publicUser = (user, token) => ({
         token,
         user: {
@@ -83,6 +85,8 @@ export function registerAuthRoutes({ router, db, log, auth, setup }) {
                 displayName: body?.displayName || body?.username,
                 password: body?.password,
                 recoveryPhrase: body?.recoveryPhrase,
+                securityQuestion: body?.securityQuestion,
+                securityAnswer: body?.securityAnswer,
                 isAdmin: true,
             });
         } catch (err) {
@@ -164,11 +168,15 @@ export function registerAuthRoutes({ router, db, log, auth, setup }) {
         const username = String(body?.username ?? '').trim().toLowerCase();
         await assertNotThrottled(limiters.recover, [ip, username && `u:${username}`]);
 
-        const user = await verifyRecovery(db, username, body?.recoveryPhrase);
+        // `answer` for a question-based account, `recoveryPhrase` for a legacy one.
+        const secret = body?.answer ?? body?.recoveryPhrase;
+        const user = await verifyRecovery(db, username, secret, body?.questionId ?? null);
         if (!user) {
             await penalise(limiters.recover, [ip, username && `u:${username}`]);
             log.info({ evt: 'auth.recover_failed', ip }, 'Failed recovery attempt');
-            throw new HttpError(401, 'Username or recovery phrase is not correct.');
+            // Deliberately does not say which half was wrong, and reads the same whether
+            // or not the account exists.
+            throw new HttpError(401, 'That answer is not correct.');
         }
 
         try {
@@ -186,6 +194,33 @@ export function registerAuthRoutes({ router, db, log, auth, setup }) {
 
         json(200, publicUser(user, auth.issue(user.id, 'client')));
     }, { auth: 'none', maxBytes: 4_000 });
+
+    // ── Security questions ───────────────────────────────────────────────────
+    // Unauthenticated: the sign-up form needs this before an account exists.
+    router.register('core', 'GET', '/api/auth/questions', ({ json }) => {
+        json(200, { questions: SECURITY_QUESTIONS });
+    }, { auth: 'none' });
+
+    /**
+     * Step one of a password reset: which question does this account use?
+     *
+     * ALWAYS answers, even for a username with no account. Returning an error for unknown
+     * names would turn this into a membership directory for an invite-only server — the
+     * exact thing invite-only registration exists to prevent. An unknown name gets a
+     * question derived from the name itself, so it is stable across attempts and the
+     * answer simply never matches.
+     */
+    router.register('core', 'POST', '/api/auth/recovery-question', async ({ body, ip, json }) => {
+        const username = String(body?.username ?? '').trim().toLowerCase();
+        await assertNotThrottled(limiters.recover, [ip]);
+
+        if (!username) throw new HttpError(400, 'Enter your username.');
+
+        const salt = settings.get('core.recoverySalt') ?? 'weave';
+        const question = recoveryQuestionFor(db, username, salt);
+
+        json(200, { question });
+    }, { auth: 'none', maxBytes: 1_000 });
 
     // ── Logout ───────────────────────────────────────────────────────────────
     router.register('core', 'POST', '/api/auth/logout', ({ req, session, json }) => {
@@ -224,16 +259,26 @@ async function createUserPrepared(db, body) {
     }
 
     const passwordHash = await argonHash(body.password);
-    const recoveryHash = body?.recoveryPhrase
-        ? await argonHash(validateRecovery(body.recoveryPhrase))
-        : null;
+
+    // A chosen question with an answer, or a legacy passphrase. Same hashed column; the
+    // question id records which.
+    let recoveryHash = null;
+    let questionId = null;
+    if (body?.securityQuestion || body?.securityAnswer) {
+        questionId = validateQuestionId(body.securityQuestion);
+        recoveryHash = await argonHash(validateSecurityAnswer(body.securityAnswer));
+    } else if (body?.recoveryPhrase) {
+        recoveryHash = await argonHash(validateRecovery(body.recoveryPhrase));
+    }
+
     const id = crypto.randomUUID();
 
     return () => {
         db.prepare(`
-            INSERT INTO users (id, username, username_lower, display_name, password_hash, recovery_hash, is_admin)
-            VALUES (?, ?, ?, ?, ?, ?, 0)
-        `).run(id, username, lower, displayName, passwordHash, recoveryHash);
+            INSERT INTO users (id, username, username_lower, display_name, password_hash,
+                               recovery_hash, recovery_question, is_admin)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        `).run(id, username, lower, displayName, passwordHash, recoveryHash, questionId);
         return getUserById(db, id);
     };
 }
