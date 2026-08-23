@@ -64,20 +64,6 @@ for item in src admin deploy package.json package-lock.json LICENSE NOTICE READM
 done
 chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh"
 
-# ── Dependencies ─────────────────────────────────────────────────────────────
-
-echo "Installing production dependencies for linux-$ARCH"
-( cd "$STAGE" && npm ci --omit=dev --no-audit --no-fund )
-
-# mediasoup downloads a prebuilt worker on install. If that silently failed the tarball
-# would look complete and the server would not start, so check rather than hope.
-WORKER="$STAGE/node_modules/mediasoup/worker/out/Release/mediasoup-worker"
-[ -x "$WORKER" ] || {
-    echo "mediasoup-worker is missing from the build. The tarball would not run." >&2
-    exit 1
-}
-echo "  mediasoup worker: $(file -b "$WORKER" 2>/dev/null | cut -c1-60)"
-
 # ── Runtime ──────────────────────────────────────────────────────────────────
 
 echo "Fetching Node $NODE_VERSION for linux-$ARCH"
@@ -102,6 +88,31 @@ rm -rf "$STAGE/runtime/lib/node_modules/npm" \
 "$STAGE/runtime/bin/node" -v >/dev/null || {
     echo "The bundled runtime does not execute here — expected when cross-building." >&2
 }
+
+# ── Dependencies ─────────────────────────────────────────────────────────────
+
+# Installed BY the bundled runtime, not by whatever Node the build machine happens to
+# have. mediasoup and better-sqlite3 both declare node>=22 and pick their prebuilt
+# binaries based on the running interpreter, so installing with an older system Node
+# produces a tarball whose dependencies do not match the runtime shipped beside them.
+# Debian 13 ships Node 20, which is exactly this trap.
+echo "Installing production dependencies with the bundled Node"
+NODE_BIN="$ROOT/$STAGE/runtime/bin"
+( cd "$STAGE" && PATH="$NODE_BIN:$PATH" "$NODE_BIN/npm" ci --omit=dev --no-audit --no-fund )
+
+# mediasoup downloads a prebuilt worker on install. If that silently failed the tarball
+# would look complete and the server would not start, so check rather than hope.
+WORKER="$STAGE/node_modules/mediasoup/worker/out/Release/mediasoup-worker"
+[ -x "$WORKER" ] || {
+    echo "mediasoup-worker is missing from the build. The tarball would not run." >&2
+    exit 1
+}
+echo "  mediasoup worker: $(file -b "$WORKER" 2>/dev/null | cut -c1-60)"
+
+
+# Only now: npm and npx are not used at runtime, and the headers and docs are several
+# megabytes on a Pi's SD card.
+rm -rf "$STAGE/runtime/lib/node_modules/npm"        "$STAGE/runtime/bin/npm" "$STAGE/runtime/bin/npx" "$STAGE/runtime/bin/corepack"        "$STAGE/runtime/share" "$STAGE/runtime/include"
 
 # ── Package ──────────────────────────────────────────────────────────────────
 
