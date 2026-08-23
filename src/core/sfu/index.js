@@ -210,6 +210,19 @@ export async function createSfu({ config, log, hooks }) {
             return workerForChannel(channelId).router;
         },
 
+        /**
+         * Which worker serves a channel.
+         *
+         * Needed because a transport belongs to the router that created it, and a router
+         * belongs to one worker. Two channels on the same worker share a router, so media
+         * survives a move between them; two channels on different workers do not, and a
+         * peer moving across that line has to rebuild. Callers need to know which case
+         * they are in, and only the SFU knows.
+         */
+        workerIndexFor(channelId) {
+            return workerForChannel(channelId).index;
+        },
+
         async createTransport(channelId) {
             const { router, webRtcServer } = workerForChannel(channelId);
 

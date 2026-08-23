@@ -44,6 +44,34 @@ export function movePeer({ peer, channel, peers, sfu, ws, hooks, reason = 'self'
         }
     }
 
+    // A transport belongs to the router that created it, and a router belongs to one
+    // worker. Channels on the SAME worker share a router, so a move between them keeps
+    // every transport and producer valid — which is every move when there is one worker,
+    // and one worker is the default.
+    //
+    // Across workers it is a different story, and a quiet one. The peer's send transport
+    // still lives on the old router, so their producer stays there too: they arrive in the
+    // new room apparently fine, still "producing", and nobody can hear them. Their recv
+    // transport is on the old router as well, so they hear nobody either. No error is
+    // raised anywhere, because nothing has technically failed — the media is simply on a
+    // router with no one on it.
+    //
+    // So when the worker changes, the media path is torn down and the client is told to
+    // build a new one. A rebuild costs a second or two of silence; the alternative costs
+    // the whole call, silently.
+    const mediaReset = sfu.workerIndexFor(from) !== sfu.workerIndexFor(channel.id);
+    if (mediaReset) {
+        for (const producer of peer.producers.values()) {
+            try { producer.close(); } catch { /* already closed */ }
+        }
+        peer.producers.clear();
+
+        for (const transport of peer.transports.values()) {
+            try { transport.close(); } catch { /* already closed */ }
+        }
+        peer.transports.clear();
+    }
+
     toChannel(from, 'peer_left', { cid: peer.cid, userId: peer.userId, moved: true }, peer.cid);
     peer.channelId = channel.id;
 
@@ -51,6 +79,9 @@ export function movePeer({ peer, channel, peers, sfu, ws, hooks, reason = 'self'
         channel,
         reason,
         by,
+        // The client rebuilds its transports and re-produces when this is set. It is false
+        // for every move on a single-worker server, which is the common case.
+        mediaReset,
         rtpCapabilities: sfu.rtpCapabilities(channel.id),
         peers: peers.channelSnapshot(channel.id, peer.cid),
     });
