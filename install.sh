@@ -238,7 +238,12 @@ fi
 
 # ── Start ────────────────────────────────────────────────────────────────────
 
-systemctl enable --now "$NAME" >/dev/null 2>&1 || systemctl restart "$NAME"
+# Enable, then ALWAYS restart. `enable --now` starts a stopped service but does nothing
+# to a running one, so on an upgrade the symlink would flip to the new release while the
+# old process carried on serving the old code — an install that reports success and
+# changes nothing.
+systemctl enable "$NAME" >/dev/null 2>&1 || true
+systemctl restart "$NAME"
 sleep 2
 
 if ! systemctl is-active --quiet "$NAME"; then
