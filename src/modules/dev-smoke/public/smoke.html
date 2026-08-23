@@ -70,12 +70,26 @@
       <div><label for="ch">Channel</label><select id="ch"><option>loading…</option></select></div>
       <div style="align-self:end"><button id="go">Join and talk</button></div>
       <div style="align-self:end"><button id="stop" class="ghost" disabled>Leave</button></div>
+      <div style="align-self:end"><button id="reg" class="ghost">Need an account?</button></div>
       <div style="align-self:end" class="muted">
         <label style="display:flex;gap:6px;align-items:center;margin:0;cursor:pointer">
           <input type="checkbox" id="tone" style="min-width:auto"> send a test tone instead of a mic
         </label>
       </div>
     </div>
+  </div>
+
+  <div class="panel" id="regPanel" style="display:none">
+    <div class="row">
+      <div><label for="rInvite">Invite code</label><input id="rInvite" placeholder="XXXX-XXXX-XXXX-XXXX"
+           style="font-family:ui-monospace,monospace"></div>
+      <div><label for="rUser">New username</label><input id="rUser" autocomplete="off"></div>
+      <div><label for="rPass">New password</label><input id="rPass" type="password" autocomplete="new-password"></div>
+      <div style="align-self:end"><button id="rGo">Create account</button></div>
+    </div>
+    <p class="muted" style="margin:10px 0 0">
+      Registration is invite-only. Make a code in the admin console under Invites.
+    </p>
   </div>
 
   <div class="panel">
@@ -481,6 +495,34 @@ $('mute').onclick = () => {
   ws.send(JSON.stringify({ type: 'setMute', muted, deafened: false }));
   $('mute').textContent = muted ? 'Unmute' : 'Mute';
 };
+$('reg').onclick = () => {
+  const panel = $('regPanel');
+  const showing = panel.style.display !== 'none';
+  panel.style.display = showing ? 'none' : 'block';
+  if (!showing) $('rInvite').focus();
+};
+
+$('rGo').onclick = async () => {
+  const username = $('rUser').value.trim();
+  try {
+    await api('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        inviteCode: $('rInvite').value.trim(),
+        username,
+        displayName: username,
+        password: $('rPass').value,
+      }),
+    });
+    log(`account "${username}" created — signing you in`, 'g');
+    $('u').value = username;
+    $('p').value = $('rPass').value;
+    $('regPanel').style.display = 'none';
+  } catch (err) {
+    log(`could not create the account: ${err.message}`, 'e');
+  }
+};
+
 $('go').onclick = join;
 $('stop').onclick = leave;
 window.addEventListener('beforeunload', () => ws?.close(4000, 'left'));

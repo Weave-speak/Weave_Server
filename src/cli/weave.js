@@ -69,15 +69,31 @@ function withDatabase(config) {
  * --password flag, which would put the password in the process list for anyone running
  * `ps` at the wrong moment.
  */
+/**
+ * Lines from a pipe, buffered.
+ *
+ * A prompt that needs a TTY simply ignores piped input, so these commands could not be
+ * scripted at all. Reading from stdin instead is what makes an automated install or a
+ * heredoc work, without a --password flag that would put the password in the process list.
+ *
+ * The buffering matters: closing a readline interface tears down the shared stdin, so
+ * reading one line per prompt made the second prompt find nothing. Everything is read
+ * once and handed out in order.
+ */
+let pipedLines = null;
+async function pipedLine(question) {
+    if (!pipedLines) {
+        const chunks = [];
+        for await (const chunk of process.stdin) chunks.push(chunk);
+        pipedLines = Buffer.concat(chunks).toString('utf8').split(/\r?\n/);
+    }
+    if (!pipedLines.length) die(`Nothing left on stdin for: ${question.trim()}`);
+    return pipedLines.shift().trim();
+}
+
 async function ask(question, { silent = false } = {}) {
     if (!process.stdin.isTTY) {
-        const piped = readline.createInterface({ input: process.stdin, terminal: false });
-        // eslint-disable-next-line no-unreachable-loop -- one line is all we want
-        for await (const line of piped) {
-            piped.close();
-            return line.trim();
-        }
-        die(`Nothing on stdin for: ${question.trim()}`);
+        return pipedLine(question);
     }
 
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
