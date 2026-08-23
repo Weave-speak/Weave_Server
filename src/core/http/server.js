@@ -82,7 +82,11 @@ export function createHttpServer({ config, log, router, auth, onUpgrade }) {
             return;
         }
 
-        const found = router.match(req.method, pathname);
+        // HEAD is answered by the GET route. Node's ServerResponse already suppresses
+        // the body for a HEAD request, so the handler needs no special case — it just has
+        // to be reachable, which it was not while HEAD fell through to 405.
+        const lookupMethod = req.method === 'HEAD' ? 'GET' : req.method;
+        const found = router.match(lookupMethod, pathname);
 
         if (!found) {
             sendJSON(res, 404, { error: 'not_found', message: `No route for ${req.method} ${pathname}` }, cors);

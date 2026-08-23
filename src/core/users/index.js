@@ -99,7 +99,13 @@ export function validateDisplayName(name) {
     return value;
 }
 
-const PUBLIC_COLUMNS = 'id, username, display_name AS displayName, avatar, is_admin AS isAdmin, created_at AS createdAt';
+// last_seen_at is included because the admin console shows it; without it the column
+// rendered as an em-dash for everyone, which looks like "nobody has ever signed in"
+// rather than "this field was never selected".
+const PUBLIC_COLUMNS = `
+    id, username, display_name AS displayName, avatar,
+    is_admin AS isAdmin, created_at AS createdAt, last_seen_at AS lastSeenAt
+`;
 
 const toUser = (row) => (row ? { ...row, isAdmin: row.isAdmin === 1 } : null);
 

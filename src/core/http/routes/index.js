@@ -5,6 +5,8 @@
 
 import { HttpError } from '../server.js';
 import { registerAuthRoutes } from './auth.js';
+import { registerAdminRoutes } from './admin.js';
+import { registerAdminStatic } from '../static.js';
 import { listChannels, getChannel, createChannel, updateChannel, deleteChannel, ChannelError } from '../../channels/index.js';
 import { createInvite, listInvites, revokeInvite, InviteError } from '../../invites/index.js';
 import { listUsers, getUserById } from '../../users/index.js';
@@ -20,6 +22,8 @@ export function registerCoreRoutes(deps) {
     const { router, db, log, moduleHost } = deps;
 
     registerAuthRoutes(deps);
+    registerAdminRoutes(deps);
+    registerAdminStatic(deps);
 
     // ── Channels ─────────────────────────────────────────────────────────────
     // Readable by any signed-in user: the client builds its sidebar from this rather

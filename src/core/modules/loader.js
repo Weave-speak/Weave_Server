@@ -330,6 +330,19 @@ export class ModuleHost {
         return [...this.#active.keys()].sort();
     }
 
+    /**
+     * Declared settings grouped by owner, with current values. This is what lets the
+     * admin console render a module's settings form without the module shipping any UI:
+     * it declares a type and a label, and a control appears.
+     */
+    settingsView() {
+        return this.#deps.settings.describe();
+    }
+
+    setSetting(key, value) {
+        return this.#deps.settings.set(key, value);
+    }
+
     /** Everything installed, enabled or not — drives the admin module manager. */
     get installed() {
         return [...this.#manifests.values()].map((m) => ({

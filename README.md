@@ -53,6 +53,7 @@ set `WEAVE_ANNOUNCED_ADDRESS` to a hostname or IP that resolves to it from the o
 ## Documentation
 
 - [Configuration](docs/configuration.md)
+- [Admin console placeholders](docs/placeholders.md) — screens that exist but are not built yet
 - [Modules](docs/modules.md) — how features are added and removed
 - [Operating a server](docs/operations.md)
 - [Contributing](CONTRIBUTING.md)
