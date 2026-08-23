@@ -106,8 +106,21 @@ export function createWsServer({ registry, log, config, onDisconnect }) {
                 return;
             }
 
+            // A module's replies carry its namespace automatically, so a handler writes
+            // send('accepted') and the wire sees 'text-chat:accepted'. Inbound types are
+            // namespaced by the registry; leaving outbound bare made the two directions
+            // disagree and let a module shadow a core message type.
+            const ns = entry.owner === 'core' ? (t) => t : (t) => `${entry.owner}:${t}`;
+
             try {
-                await entry.handler({ ws, msg, send: (t, p) => send(ws, t, p), fail, broadcast, log: ws.log });
+                await entry.handler({
+                    ws,
+                    msg,
+                    send: (t, p) => send(ws, ns(t), p),
+                    fail,
+                    broadcast: (t, p, pred) => broadcast(ns(t), p, pred),
+                    log: ws.log,
+                });
             } catch (err) {
                 ws.log.error({ evt: 'ws.handler_failed', type: msg.type, module: entry.owner, err },
                     `Handler for "${msg.type}" threw`);

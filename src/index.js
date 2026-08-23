@@ -21,11 +21,13 @@ import { AdminRegistry } from './core/admin/registry.js';
 import { ModuleHost } from './core/modules/loader.js';
 import { createAuth, purgeExpiredSessions } from './core/auth/index.js';
 import { SetupState } from './core/setup/index.js';
-import { ensureDefaults } from './core/channels/index.js';
+import { ensureDefaults, listChannels } from './core/channels/index.js';
 import { registerCoreRoutes } from './core/http/routes/index.js';
 import { createSfu } from './core/sfu/index.js';
 import { PeerRegistry } from './core/peers/index.js';
 import { registerCoreWsHandlers } from './core/ws/handlers/core.js';
+import { movePeer } from './core/peers/move.js';
+import { getChannel } from './core/channels/index.js';
 import { PROTOCOL, CORE_FEATURES } from './protocol/index.js';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -70,7 +72,7 @@ export async function start(env = process.env) {
     const setup = new SetupState({ db, config, log });
 
     // ── Media ────────────────────────────────────────────────────────────────
-    const sfu = await createSfu({ config, log });
+    const sfu = await createSfu({ config, log, hooks });
     const peers = new PeerRegistry(log);
 
     const ws = createWsServer({
@@ -119,8 +121,19 @@ export async function start(env = process.env) {
     }, { auth: 'none' });
 
     // ── Modules ──────────────────────────────────────────────────────────────
+    const moduleActions = {
+        /** Move a peer, using the same path as a self-initiated or admin move. */
+        movePeer(cid, channelId, reason = 'module') {
+            const peer = peers.get(cid);
+            const channel = getChannel(db, channelId);
+            if (!peer || !channel) return false;
+            return movePeer({ peer, channel, peers, sfu, ws, hooks, reason }).moved;
+        },
+        listChannels: () => listChannels(db),
+    };
+
     const moduleHost = new ModuleHost({
-        config, log, db, settings, hooks, admin,
+        config, log, db, settings, hooks, admin, peers, actions: moduleActions,
         http: httpFacade,
         ws: wsFacade,
     });

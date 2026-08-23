@@ -1,0 +1,8 @@
+{
+  "id": "uploads",
+  "name": "Image uploads",
+  "version": "1.0.0",
+  "description": "Lets people attach images to messages. Stores files on disk and prunes them on a retention policy.",
+  "requires": [],
+  "defaultEnabled": true
+}

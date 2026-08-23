@@ -194,7 +194,7 @@ export class ModuleHost {
      */
     #buildContext(manifest, disposers) {
         const { id } = manifest;
-        const { http, ws, hooks, settings, admin, db, log } = this.#deps;
+        const { http, ws, hooks, settings, admin, db, log, peers, config } = this.#deps;
         const track = (dispose) => { disposers.push(dispose); };
 
         return {
@@ -214,8 +214,10 @@ export class ModuleHost {
                     const dispose = ws.register(id, type, handler);
                     track(dispose);
                 },
-                send: ws.send,
-                broadcast: ws.broadcast,
+                // Namespaced to match, so a hook-driven broadcast looks the same on the
+                // wire as one sent from a handler.
+                send: (sock, type, payload) => ws.send(sock, `${id}:${type}`, payload),
+                broadcast: (type, payload, predicate) => ws.broadcast(`${id}:${type}`, payload, predicate),
             },
 
             hooks: {
@@ -243,6 +245,37 @@ export class ModuleHost {
             admin: {
                 panel: (panel) => { track(admin.register(id, panel)); },
             },
+
+            // Read-only view of who is connected and where. Modules need this to scope a
+            // broadcast to a channel; they are not handed the registry itself, so they
+            // cannot add or evict a peer behind the core's back.
+            peers: {
+                get: (cid) => peers?.get(cid),
+                inChannel: (channelId, exceptCid) => peers?.inChannel(channelId, exceptCid) ?? [],
+                forUser: (userId) => peers?.forUser(userId) ?? [],
+                get count() { return peers?.count ?? 0; },
+            },
+
+            // Actions a module may take on the core's behalf. Deliberately a short,
+            // named list rather than handing over the registries: a module can move
+            // somebody, but it cannot invent a new way for peers to change channel.
+            actions: this.#deps.actions ?? {},
+
+            // Where a module may write. Narrow on purpose: a module gets the paths it
+            // could legitimately need, not the whole config, so it cannot quietly come to
+            // depend on how the server is exposed or which proxies are trusted.
+            paths: {
+                data: config.dataDir,
+                uploads: config.uploadsDir,
+                moduleDir: manifest.dir,
+            },
+
+            /**
+             * Register arbitrary cleanup — timers, watchers, anything the disposers above
+             * do not already cover. Without this a module could not be unloaded without
+             * leaving an interval running against a server that has moved on.
+             */
+            onUnload: (fn) => { track(fn); },
         };
     }
 

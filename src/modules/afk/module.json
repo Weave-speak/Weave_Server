@@ -1,0 +1,8 @@
+{
+  "id": "afk",
+  "name": "Away handling",
+  "version": "1.0.0",
+  "description": "Moves people to an away channel after their microphone has been quiet for a while. Never moves anyone who is sharing a screen or camera, or who has no microphone at all.",
+  "requires": [],
+  "defaultEnabled": true
+}

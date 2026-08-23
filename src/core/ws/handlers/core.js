@@ -14,6 +14,7 @@
 // alternative is that a forged message lets someone listen to a room they were never in.
 
 import { PeerRegistry, SLOTS, isValidSlot } from '../../peers/index.js';
+import { movePeer } from '../../peers/move.js';
 import { getChannel, defaultChannel } from '../../channels/index.js';
 import { negotiate, ProtocolMismatchError } from '../../../protocol/index.js';
 import { touchLastSeen } from '../../users/index.js';
@@ -175,6 +176,7 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
 
         peer.producers.set(slot, producer);
         producer.on('transportclose', () => peer.producers.delete(slot));
+        await sfu.observeAudio(peer.channelId, producer);
 
         ws.log.info({ evt: 'producer.new', slot, kind: producer.kind },
             `${peer.username} started sending ${slot}`);
@@ -293,46 +295,41 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
     });
 
     // ── moving between channels ──────────────────────────────────────────────
-    registry.register('core', 'move', async ({ ws, msg, send, fail }) => {
+    // The work lives in movePeer so that a self-initiated move, an admin-initiated one
+    // and a module-initiated one cannot drift apart. The previous server had this inline
+    // in one handler and the other paths gradually stopped matching it.
+    registry.register('core', 'move', ({ ws, msg, send, fail }) => {
         const peer = peers.get(ws.cid);
         const channel = getChannel(db, msg.channelId);
         if (!channel) return fail(ws, 'no_channel', 'No such channel.');
-        if (channel.id === peer.channelId) return send('moved', { channel });
+        if (channel.id === peer.channelId) return send('moved', { channel, reason: 'self' });
 
         const from = peer.channelId;
-
-        // Consumers belong to the old channel's router and cannot follow. Close them
-        // rather than leaving them attached to media the peer is no longer entitled to.
-        for (const consumer of peer.consumers.values()) {
-            try { consumer.close(); } catch { /* already closed */ }
-        }
-        peer.consumers.clear();
-
-        // A channel that forbids voice must not merely hide the mic in the UI: the
-        // producer is closed here, server-side, so a modified client cannot keep talking.
-        if (!channel.allowVoice) {
-            const audio = peer.producers.get(SLOTS.AUDIO);
-            if (audio) {
-                audio.close();
-                peer.producers.delete(SLOTS.AUDIO);
-            }
-        }
-
-        toChannel(from, 'peer_left', { cid: peer.cid, moved: true }, ws.cid);
-        peer.channelId = channel.id;
-
+        movePeer({ peer, channel, peers, sfu, ws: wsServer, hooks, reason: 'self' });
         ws.log.info({ evt: 'peer.moved', from, to: channel.name },
             `${peer.username} moved to ${channel.name}`);
-
-        send('moved', {
-            channel,
-            rtpCapabilities: sfu.rtpCapabilities(channel.id),
-            peers: peers.channelSnapshot(channel.id, ws.cid),
-        });
-        toChannel(channel.id, 'peer_joined', { peer: PeerRegistry.publicView(peer) }, ws.cid);
-
-        hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: channel.id });
     });
+
+    // ── admin: move someone else ─────────────────────────────────────────────
+    registry.register('core', 'adminMove', ({ ws, msg, send, fail }) => {
+        const target = peers.get(msg.cid);
+        if (!target) return fail(ws, 'no_peer', 'That person is no longer connected.');
+
+        const channel = getChannel(db, msg.channelId);
+        if (!channel) return fail(ws, 'no_channel', 'No such channel.');
+
+        const mover = peers.get(ws.cid);
+        movePeer({
+            peer: target, channel, peers, sfu, ws: wsServer, hooks,
+            // The reason reaches the moved client so it can say something true rather
+            // than showing "moved by an administrator" for every kind of move.
+            reason: 'admin', by: mover.displayName ?? mover.username,
+        });
+
+        ws.log.warn({ evt: 'peer.admin_moved', target: target.username, to: channel.name },
+            `${mover.username} moved ${target.username} to ${channel.name}`);
+        send('adminMoved', { cid: target.cid, channel });
+    }, { auth: 'admin' });
 
     // ── mute and deafen ──────────────────────────────────────────────────────
     // Broadcast, because "can this person hear me?" is something the room needs to know.

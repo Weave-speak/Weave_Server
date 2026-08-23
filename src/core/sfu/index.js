@@ -95,7 +95,7 @@ export function resolveAnnouncedAddress(config, log) {
     return { address: '127.0.0.1', source: 'loopback' };
 }
 
-export async function createSfu({ config, log }) {
+export async function createSfu({ config, log, hooks }) {
     const sfuLog = log.child({ mod: 'sfu' });
     const { address: announcedAddress, source } = resolveAnnouncedAddress(config, sfuLog);
 
@@ -144,7 +144,33 @@ export async function createSfu({ config, log }) {
         const webRtcServer = await worker.createWebRtcServer({ listenInfos });
         const router = await worker.createRouter({ mediaCodecs: MEDIA_CODECS });
 
-        workers.push({ index, port, worker, webRtcServer, router, channels: new Set() });
+        // Real per-packet audio levels, straight off the RTP stream. This is a
+        // server-side measurement, so nothing depends on trusting a client to report
+        // honestly about itself, and muting genuinely pauses the producer so silence
+        // needs no special case.
+        //
+        // maxEntries is load-bearing rather than tuning: mediasoup defaults it to 1, and
+        // at 1 the observer reports only the single loudest speaker per interval and
+        // misses everyone else's activity entirely.
+        const audioObserver = await router.createAudioLevelObserver({
+            maxEntries: 32,
+            // Louder than mediasoup's -80 default so a quiet room is not "activity".
+            threshold: -65,
+            interval: 2000,
+        });
+
+        audioObserver.on('volumes', (volumes) => {
+            for (const { producer, volume } of volumes) {
+                hooks?.emit('mic:activity', {
+                    cid: producer.appData?.cid,
+                    userId: producer.appData?.userId,
+                    producerId: producer.id,
+                    volume,
+                });
+            }
+        });
+
+        workers.push({ index, port, worker, webRtcServer, router, audioObserver, channels: new Set() });
         sfuLog.info({ evt: 'sfu.worker_ready', index, port, pid: worker.pid },
             `mediasoup worker ${index} listening on UDP+TCP ${port}`);
     }
@@ -198,6 +224,21 @@ export async function createSfu({ config, log }) {
             });
 
             return transport;
+        },
+
+        /**
+         * Watch an audio producer for activity. Safe to call for any producer; only
+         * audio is accepted by the observer.
+         */
+        async observeAudio(channelId, producer) {
+            if (producer.kind !== 'audio') return;
+            const { audioObserver } = workerForChannel(channelId);
+            try {
+                await audioObserver.addProducer({ producerId: producer.id });
+            } catch (err) {
+                // Never let observation failure break an otherwise working call.
+                sfuLog.warn({ evt: 'sfu.observe_failed', err }, 'Could not observe an audio producer');
+            }
         },
 
         /** Whether a channel can be served at all, for diagnostics. */

@@ -1,0 +1,8 @@
+{
+  "id": "text-chat",
+  "name": "Text chat",
+  "version": "1.0.0",
+  "description": "Messages in channels, with history and a retention policy. Turn it off for a voice-only server.",
+  "requires": [],
+  "defaultEnabled": true
+}
