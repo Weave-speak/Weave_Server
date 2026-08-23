@@ -8,28 +8,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { start } from '../src/index.js';
-
-async function freePort() {
-    const srv = net.createServer();
-    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-    const { port } = srv.address();
-    await new Promise((r) => srv.close(r));
-    return port;
-}
+import { freePort, startWithRetry } from './helpers.js';
 
 async function launch() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weave-auth-'));
-    const port = await freePort();
-    const app = await start({
-        WEAVE_HTTP_PORT: String(port),
-        WEAVE_HTTP_BIND: '127.0.0.1',
-        WEAVE_DATA_DIR: path.join(dir, 'data'),
-        WEAVE_LOG_DIR: path.join(dir, 'logs'),
-        WEAVE_LOG_LEVEL: 'silent',
+
+    // Ports are chosen inside the builder so a retry gets fresh ones rather than the pair
+    // that just lost a race. The media port is set explicitly because the default is a
+    // fixed number, which every test file would otherwise fight over.
+    let port;
+    let mediaPort;
+
+    const app = await startWithRetry(async () => {
+        port = await freePort();
+        mediaPort = await freePort();
+        return {
+            WEAVE_HTTP_PORT: String(port),
+            WEAVE_HTTP_BIND: '127.0.0.1',
+            WEAVE_MEDIA_PORT: String(mediaPort),
+            WEAVE_ANNOUNCED_ADDRESS: '127.0.0.1',
+            WEAVE_DATA_DIR: path.join(dir, 'data'),
+            WEAVE_LOG_DIR: path.join(dir, 'logs'),
+            WEAVE_LOG_LEVEL: 'silent',
+        };
     });
 
     const base = `http://127.0.0.1:${port}`;

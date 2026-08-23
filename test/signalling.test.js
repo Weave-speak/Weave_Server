@@ -9,19 +9,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
-import { start } from '../src/index.js';
-
-async function freePort() {
-    const srv = net.createServer();
-    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-    const { port } = srv.address();
-    await new Promise((r) => srv.close(r));
-    return port;
-}
+import { freePort, startWithRetry } from './helpers.js';
 
 /** A tiny client that awaits specific message types, so tests read as a conversation. */
 function client(url) {
@@ -65,17 +56,21 @@ function client(url) {
 
 async function launch() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weave-sig-'));
-    const httpPort = await freePort();
-    const mediaPort = await freePort();
+    let httpPort;
+    let mediaPort;
 
-    const app = await start({
-        WEAVE_HTTP_PORT: String(httpPort),
-        WEAVE_HTTP_BIND: '127.0.0.1',
-        WEAVE_MEDIA_PORT: String(mediaPort),
-        WEAVE_ANNOUNCED_ADDRESS: '127.0.0.1',
-        WEAVE_DATA_DIR: path.join(dir, 'data'),
-        WEAVE_LOG_DIR: path.join(dir, 'logs'),
-        WEAVE_LOG_LEVEL: 'silent',
+    const app = await startWithRetry(async () => {
+        httpPort = await freePort();
+        mediaPort = await freePort();
+        return {
+            WEAVE_HTTP_PORT: String(httpPort),
+            WEAVE_HTTP_BIND: '127.0.0.1',
+            WEAVE_MEDIA_PORT: String(mediaPort),
+            WEAVE_ANNOUNCED_ADDRESS: '127.0.0.1',
+            WEAVE_DATA_DIR: path.join(dir, 'data'),
+            WEAVE_LOG_DIR: path.join(dir, 'logs'),
+            WEAVE_LOG_LEVEL: 'silent',
+        };
     });
 
     const base = `http://127.0.0.1:${httpPort}`;
