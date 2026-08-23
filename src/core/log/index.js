@@ -119,14 +119,36 @@ export function createLogger(cfg) {
         },
     ];
 
-    return pino({
+    // Built explicitly rather than via the `transport` option, so shutdown can close it.
+    // Left to itself the worker keeps running after everything else has stopped and will
+    // happily try to rotate into a directory that no longer exists.
+    const transport = pino.transport({ targets });
+
+    const logger = pino({
         level: cfg.logLevel,
         redact: { paths: REDACT_PATHS, censor: '[redacted]' },
         serializers,
         base: undefined, // drop pid/hostname; neither helps and hostname identifies a machine
         timestamp: pino.stdTimeFunctions.isoTime,
-        transport: { targets },
-    });
+    }, transport);
+
+    /**
+     * Flush and close the transport. Call this LAST during shutdown: after it resolves
+     * nothing more can be logged, so anything worth recording must already have been.
+     */
+    logger.closeTransport = async () => {
+        try {
+            logger.flush?.();
+            await new Promise((resolve) => {
+                transport.on('close', resolve);
+                transport.end();
+                // Never let a stuck transport hold up an otherwise clean exit.
+                setTimeout(resolve, 2000).unref();
+            });
+        } catch { /* already gone */ }
+    };
+
+    return logger;
 }
 
 /**

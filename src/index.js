@@ -186,6 +186,8 @@ export async function start(env = process.env) {
         db.close();
 
         log.info({ evt: 'server.stopped' }, 'Stopped cleanly');
+        // Last, and after the final line: closing the transport ends logging entirely.
+        await log.closeTransport?.();
     }
 
     for (const signal of ['SIGINT', 'SIGTERM']) {
