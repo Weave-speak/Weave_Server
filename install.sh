@@ -206,9 +206,12 @@ sed_args=(
     -e "s#/opt/weave/#${PREFIX}/#g"
     -e "s#/var/lib/weave#${DATA_DIR}#g"
     -e "s#/etc/weave/#${CONF_DIR}/#g"
-    -e "s#^User=weave$#User=${WEAVE_USER}#"
-    -e "s#^Group=weave$#Group=${WEAVE_USER}#"
-    -e "s#^SyslogIdentifier=weave$#SyslogIdentifier=${NAME}#"
+    # A different delimiter for the anchored patterns: with # the end-of-line $ sits
+    # directly before it, and bash expands "$#" to the positional-parameter count before
+    # sed ever sees it, producing an unterminated s command.
+    -e "s|^User=weave$|User=${WEAVE_USER}|"
+    -e "s|^Group=weave$|Group=${WEAVE_USER}|"
+    -e "s|^SyslogIdentifier=weave$|SyslogIdentifier=${NAME}|"
 )
 sed "${sed_args[@]}" "$SRC/deploy/weave.service" > "$UNIT"
 chmod 644 "$UNIT"
