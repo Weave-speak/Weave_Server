@@ -172,7 +172,9 @@ WEAVE_LOG_DIR=$DATA_DIR/logs
 WEAVE_LOG_LEVEL=info
 
 # The name people see before they sign in.
-WEAVE_INSTANCE_NAME=Weave
+# Quote anything containing a space. systemd reads the whole line, but the weave
+# command sources this file with bash, which would run the second word as a command.
+WEAVE_INSTANCE_NAME="Weave"
 EOF
   chown root:"$WEAVE_USER" "$ENV_FILE"
   # Readable by the service, writable only by root.
@@ -196,7 +198,19 @@ info "Command: /usr/local/bin/$NAME"
 
 # ── Service ──────────────────────────────────────────────────────────────────
 
-sed -e "s#/opt/weave/#$PREFIX/#g"     -e "s#/var/lib/weave#$DATA_DIR#g"     -e "s#^User=weave\$#User=$WEAVE_USER#"     -e "s#^Group=weave\$#Group=$WEAVE_USER#"     -e "s#^SyslogIdentifier=weave\$#SyslogIdentifier=$NAME#"     "$SRC/deploy/weave.service" > "$UNIT"
+# The shipped unit is valid as-is for the default instance. For a named one, every
+# path and identity is rewritten. /etc/weave was missed on the first attempt, which
+# left EnvironmentFile pointing at a directory that did not exist — systemd reported
+# only "Failed to load environment files", with no hint which one.
+sed_args=(
+    -e "s#/opt/weave/#${PREFIX}/#g"
+    -e "s#/var/lib/weave#${DATA_DIR}#g"
+    -e "s#/etc/weave/#${CONF_DIR}/#g"
+    -e "s#^User=weave$#User=${WEAVE_USER}#"
+    -e "s#^Group=weave$#Group=${WEAVE_USER}#"
+    -e "s#^SyslogIdentifier=weave$#SyslogIdentifier=${NAME}#"
+)
+sed "${sed_args[@]}" "$SRC/deploy/weave.service" > "$UNIT"
 chmod 644 "$UNIT"
 systemctl daemon-reload
 info "Service: $UNIT"

@@ -91,7 +91,7 @@ jobs:
           sudo cp deploy/weave.service /etc/systemd/system/weave.service
           sudo systemd-analyze verify /etc/systemd/system/weave.service 2>&1 | tee verify.log
           # Missing ExecStart target is expected here — nothing is installed on a runner.
-          if grep -viE 'command .* is not executable|No such file or directory' verify.log | grep -qiE 'error|failed'; then
+          if grep -viE 'command .* is not executable|No such file or directory' verify.log | grep -qiE 'error|failed|unknown key|unknown lvalue'; then
             echo "::error::systemd rejected the unit"; exit 1
           fi
           sudo rm -f /etc/systemd/system/weave.service

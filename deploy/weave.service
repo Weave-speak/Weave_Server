@@ -13,6 +13,13 @@ Documentation=https://github.com/Weave-speak/Weave_Server
 After=network-online.target
 Wants=network-online.target
 
+# These belong to [Unit], not [Service]. In [Service] systemd ignores them with only a
+# note in `systemd-analyze verify`, so the unit looks rate-limited while actually
+# restarting forever. If it fails this often this fast, restarting again will not help —
+# stop and be visibly broken rather than looping quietly.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=weave
@@ -31,10 +38,6 @@ TimeoutStopSec=20
 
 Restart=on-failure
 RestartSec=5
-# If it fails this often this fast, restarting again will not help — stop and be visibly
-# broken rather than looping quietly.
-StartLimitIntervalSec=120
-StartLimitBurst=5
 
 # Logs go to the journal; the app also writes rotating JSON files under its data dir.
 StandardOutput=journal
