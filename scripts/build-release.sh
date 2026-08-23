@@ -106,7 +106,9 @@ echo "  mediasoup worker: $(file -b "$WORKER" 2>/dev/null | cut -c1-60)"
 
 # Only now: npm and npx are not used at runtime, and the headers and docs are several
 # megabytes on a Pi's SD card.
-rm -rf "$STAGE/runtime/lib/node_modules/npm" \n       "$STAGE/runtime/bin/npm" "$STAGE/runtime/bin/npx" "$STAGE/runtime/bin/corepack" \n       "$STAGE/runtime/share" "$STAGE/runtime/include"
+for cruft in lib/node_modules/npm bin/npm bin/npx bin/corepack share include; do
+    rm -rf "${STAGE:?}/runtime/$cruft"
+done
 
 # ── Package ──────────────────────────────────────────────────────────────────
 
