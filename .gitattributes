@@ -1,0 +1,13 @@
+# Normalise line endings in every working tree. The server runs on Linux; edits
+# may come from Windows. Without this a whole-file CRLF flip can make a checkout
+# permanently stat-dirty, which blocks git merge even when the content matches.
+* text=auto eol=lf
+
+# Binary assets — never apply EOL conversion
+*.ogg binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.node binary

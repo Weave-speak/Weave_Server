@@ -1,0 +1,30 @@
+{
+  "name": "weave-server",
+  "version": "0.1.0",
+  "description": "Weave — self-hosted voice, video and text server with a modular feature system",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "private": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "weave": "./src/cli/weave.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test",
+    "lint": "node --check src/index.js"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "better-sqlite3": "^13.0.3",
+    "mediasoup": "^3.26.0",
+    "pino": "^10.3.1",
+    "pino-roll": "^3.1.0",
+    "rate-limiter-flexible": "^11.2.0",
+    "ws": "^8.21.3",
+    "pino-pretty": "^13.1.2"
+  }
+}

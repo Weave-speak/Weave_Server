@@ -1,0 +1,22 @@
+Weave
+Copyright (C) 2026 The Weave contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See LICENSE for the full text.
+
+--------------------------------------------------------------------------------
+Contributors
+--------------------------------------------------------------------------------
+
+Weave grew out of a private project. The following people contributed to the
+codebase that this server is derived from, and have agreed to their
+contributions being released under the licence above:
+
+  - Hentus van Wyk   (CodeineZA)
+  - Walter Brink     (CodererMostFoul)
+  - Lourens Olivier
+
+Contributions from here on are made under the Developer Certificate of Origin;
+see CONTRIBUTING.md.
