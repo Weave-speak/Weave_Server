@@ -75,6 +75,15 @@ export function newCorrelationId(bytes = crypto.getRandomValues(new Uint8Array(6
 }
 
 export function createLogger(cfg) {
+    // "silent" means log nothing, so build nothing. Spinning up a worker thread and a
+    // rotating file just to discard every line wastes a process and, in test runs, makes
+    // every shutdown wait on a transport that had no reason to exist.
+    if (cfg.logLevel === 'silent') {
+        const quiet = createNullLogger();
+        quiet.closeTransport = async () => {};
+        return quiet;
+    }
+
     fs.mkdirSync(cfg.logDir, { recursive: true });
 
     const redactIps = cfg.redactIps !== false;
@@ -140,10 +149,21 @@ export function createLogger(cfg) {
         try {
             logger.flush?.();
             await new Promise((resolve) => {
-                transport.on('close', resolve);
+                let settled = false;
+                const finish = () => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve();
+                };
+                // Deliberately NOT unref'd. Node 22 does not always emit 'close' here,
+                // and an unref'd timer cannot hold the loop open — so the promise would
+                // simply never settle once everything else had drained. A referenced
+                // timer guarantees this resolves either way; 'close' clears it as soon
+                // as it does arrive, so the common path stays immediate.
+                const timer = setTimeout(finish, 2000);
+                transport.on('close', finish);
                 transport.end();
-                // Never let a stuck transport hold up an otherwise clean exit.
-                setTimeout(resolve, 2000).unref();
             });
         } catch { /* already gone */ }
     };
