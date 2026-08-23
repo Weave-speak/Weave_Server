@@ -23,12 +23,21 @@
 
 set -euo pipefail
 
-WEAVE_USER="${WEAVE_USER:-weave}"
-PREFIX="${WEAVE_PREFIX:-/opt/weave}"
-DATA_DIR="${WEAVE_DATA_DIR:-/var/lib/weave}"
-CONF_DIR="${WEAVE_CONF_DIR:-/etc/weave}"
+# An instance name lets more than one Weave live on one machine — a dev alongside a prod,
+# each with its own service, user, data and settings. Everything below is derived from it,
+# so nothing is shared and removing one cannot disturb the other.
+#
+#   sudo ./install.sh                      → weave
+#   sudo WEAVE_INSTANCE=dev ./install.sh   → weave-dev
+INSTANCE="${WEAVE_INSTANCE:-}"
+NAME="weave${INSTANCE:+-$INSTANCE}"
+
+WEAVE_USER="${WEAVE_USER:-$NAME}"
+PREFIX="${WEAVE_PREFIX:-/opt/$NAME}"
+DATA_DIR="${WEAVE_DATA_DIR:-/var/lib/$NAME}"
+CONF_DIR="${WEAVE_CONF_DIR:-/etc/$NAME}"
 ENV_FILE="$CONF_DIR/weave.env"
-UNIT=/etc/systemd/system/weave.service
+UNIT="/etc/systemd/system/$NAME.service"
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -61,7 +70,7 @@ VERSION="$(node -e 'process.stdout.write(require("'"$SRC"'/package.json").versio
 RELEASE_DIR="$PREFIX/releases/$VERSION"
 
 bold ""
-bold "Weave $VERSION  ($ARCH)"
+bold "Weave $VERSION  ($ARCH)${INSTANCE:+  ·  instance: $INSTANCE}"
 bold "───────────────────────────────"
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
@@ -129,7 +138,7 @@ else
 # Weave configuration.
 #
 # Run \`weave config\` to see every setting, what it does, and its current value.
-# Restart after editing:  sudo systemctl restart weave
+# Restart after editing:  sudo systemctl restart $NAME
 
 # The port for HTTP and the signalling WebSocket. Put a reverse proxy in front of this
 # for anything public.
@@ -175,19 +184,20 @@ chown -R "$WEAVE_USER:$WEAVE_USER" "$DATA_DIR"
 
 # ── Command ──────────────────────────────────────────────────────────────────
 
-cat > /usr/local/bin/weave <<EOF
+cat > "/usr/local/bin/$NAME" <<EOF
 #!/usr/bin/env bash
 # Loads the same settings the service uses, so \`weave doctor\` checks the real config.
 set -a; [ -f "$ENV_FILE" ] && . "$ENV_FILE"; set +a
 exec "$PREFIX/current/runtime/bin/node" "$PREFIX/current/src/cli/weave.js" "\$@" 2>/dev/null \
   || exec node "$PREFIX/current/src/cli/weave.js" "\$@"
 EOF
-chmod 755 /usr/local/bin/weave
-info "Command: /usr/local/bin/weave"
+chmod 755 "/usr/local/bin/$NAME"
+info "Command: /usr/local/bin/$NAME"
 
 # ── Service ──────────────────────────────────────────────────────────────────
 
-install -m 644 "$SRC/deploy/weave.service" "$UNIT"
+sed -e "s#/opt/weave/#$PREFIX/#g"     -e "s#/var/lib/weave#$DATA_DIR#g"     -e "s#^User=weave\$#User=$WEAVE_USER#"     -e "s#^Group=weave\$#Group=$WEAVE_USER#"     -e "s#^SyslogIdentifier=weave\$#SyslogIdentifier=$NAME#"     "$SRC/deploy/weave.service" > "$UNIT"
+chmod 644 "$UNIT"
 systemctl daemon-reload
 info "Service: $UNIT"
 
@@ -204,19 +214,19 @@ set -e
 
 if [ $DOCTOR -ne 0 ]; then
   warn "Doctor found problems. Weave is installed but NOT started."
-  warn "Edit $ENV_FILE, then:  sudo systemctl start weave"
+  warn "Edit $ENV_FILE, then:  sudo systemctl start $NAME"
   bold ""
   exit 0
 fi
 
 # ── Start ────────────────────────────────────────────────────────────────────
 
-systemctl enable --now weave >/dev/null 2>&1 || systemctl restart weave
+systemctl enable --now "$NAME" >/dev/null 2>&1 || systemctl restart "$NAME"
 sleep 2
 
-if ! systemctl is-active --quiet weave; then
+if ! systemctl is-active --quiet "$NAME"; then
   die "The service did not start. What it said:
-  sudo journalctl -u weave -n 40 --no-pager"
+  sudo journalctl -u $NAME -n 40 --no-pager"
 fi
 
 PORT="$(grep -m1 '^WEAVE_HTTP_PORT=' "$ENV_FILE" | cut -d= -f2)"
@@ -231,11 +241,11 @@ info ""
 info "Next, and it is the step people skip:"
 info "  Forward UDP *and* TCP port ${MEDIA:-44444} from your router to this machine,"
 info "  and set WEAVE_ANNOUNCED_ADDRESS in $ENV_FILE to the address your"
-info "  users reach you on. Then:  sudo weave doctor --stun"
+info "  users reach you on. Then:  sudo $NAME doctor --stun"
 info ""
-info "  Logs:     sudo journalctl -u weave -f"
-info "  Restart:  sudo systemctl restart weave"
-info "  Check:    sudo weave doctor"
+info "  Logs:     sudo journalctl -u $NAME -f"
+info "  Restart:  sudo systemctl restart $NAME"
+info "  Check:    sudo $NAME doctor"
 bold ""
 
-journalctl -u weave -n 30 --no-pager 2>/dev/null | grep -A 14 'FIRST-RUN SETUP' || true
+journalctl -u "$NAME" -n 30 --no-pager 2>/dev/null | grep -A 14 'FIRST-RUN SETUP' || true
