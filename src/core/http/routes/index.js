@@ -7,6 +7,7 @@ import { HttpError } from '../server.js';
 import { registerAuthRoutes } from './auth.js';
 import { registerAdminRoutes } from './admin.js';
 import { registerAdminStatic } from '../static.js';
+import { registerInvitePage } from './invite-page.js';
 import {
     listChannels, visibleChannels, getChannel, createChannel, updateChannel, deleteChannel,
     isMember, addMember, listMembers, ChannelError,
@@ -38,6 +39,7 @@ export function registerCoreRoutes(deps) {
     registerAuthRoutes(deps);
     registerAdminRoutes(deps);
     registerAdminStatic(deps);
+    registerInvitePage(deps);
 
     // ── Channels ─────────────────────────────────────────────────────────────
     // Readable by any signed-in user: the client builds its sidebar from this rather
