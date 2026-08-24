@@ -1,0 +1,8 @@
+{
+  "id": "diagnostics",
+  "name": "Client diagnostics",
+  "version": "1.0.0",
+  "description": "Receives failure reports from clients — update logs, crash notes — and stores them for an administrator to read. Reports are accepted before sign-in, because the moment a client most needs to report is the moment it may not have one.",
+  "requires": [],
+  "defaultEnabled": true
+}
