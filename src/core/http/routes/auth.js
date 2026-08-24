@@ -25,6 +25,11 @@ import { revokeAllForUser } from '../../auth/index.js';
 
 const WINDOW_SEC = 15 * 60;
 
+// Forced-reset tickets: proof that the old password was just presented, good for one
+// complete-reset call within ten minutes. In memory on purpose — a restart voids them
+// and the user simply signs in again.
+const resetTickets = new Map();
+
 const limiters = {
     login: new RateLimiterMemory({ points: 10, duration: WINDOW_SEC }),
     register: new RateLimiterMemory({ points: 10, duration: WINDOW_SEC }),
@@ -144,6 +149,18 @@ export function registerAuthRoutes({ router, db, log, auth, setup, settings }) {
         }
 
         touchLastSeen(db, user.id);
+
+        // An admin forced a reset: the old password just PROVED the account, but no
+        // session is issued until its owner chooses a new password. The ticket is the
+        // proof carried into that one next step — short-lived, single-use, in memory.
+        if (db.prepare('SELECT must_reset FROM users WHERE id = ?').get(user.id)?.must_reset === 1) {
+            const ticket = crypto.randomBytes(24).toString('base64url');
+            resetTickets.set(ticket, { userId: user.id, expires: Date.now() + 10 * 60_000 });
+            log.info({ evt: 'auth.reset_required', user: user.username },
+                `${user.username} signed in against a forced reset`);
+            return json(200, { resetRequired: true, ticket, username: user.username });
+        }
+
         const wantsAdminCookie = body?.forAdminPanel === true;
         const token = auth.issue(user.id, wantsAdminCookie ? 'admin' : 'client', req.headers['user-agent']);
 
@@ -157,6 +174,28 @@ export function registerAuthRoutes({ router, db, log, auth, setup, settings }) {
             json(200, { user: publicUser(user).user }, { 'Set-Cookie': auth.cookieFor(token) });
             return;
         }
+        json(200, publicUser(user, token));
+    }, { auth: 'none', maxBytes: 4_000 });
+
+    router.register('core', 'POST', '/api/auth/complete-reset', async ({ body, req, json }) => {
+        const held = resetTickets.get(String(body?.ticket ?? ''));
+        if (!held || held.expires < Date.now()) {
+            throw new HttpError(401, 'That reset window has closed. Sign in again.');
+        }
+        resetTickets.delete(body.ticket);
+
+        try {
+            await setPassword(db, held.userId, body?.password);
+        } catch (err) {
+            if (err instanceof UserError) throw new HttpError(400, err.message, { field: err.field });
+            throw err;
+        }
+        db.prepare('UPDATE users SET must_reset = 0 WHERE id = ?').run(held.userId);
+
+        const user = getUserById(db, held.userId);
+        const token = auth.issue(user.id, 'client', req.headers['user-agent']);
+        log.info({ evt: 'auth.reset_completed', user: user.username },
+            `${user.username} chose a new password after a forced reset`);
         json(200, publicUser(user, token));
     }, { auth: 'none', maxBytes: 4_000 });
 

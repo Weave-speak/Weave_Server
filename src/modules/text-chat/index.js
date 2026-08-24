@@ -220,6 +220,27 @@ export function register(ctx) {
         });
     });
 
+    // An admin empties a channel: history, mentions and read markers all go, because a
+    // read marker pointing into deleted history is a badge that can never clear. The
+    // broadcast tells every open client to drop what it is showing.
+    ctx.http.route('DELETE', '/api/chat/:channelId/messages', ({ params, session, json }) => {
+        const channel = getChannel(db, params.channelId);
+        if (!channel) return json(404, { error: 'No such channel.' });
+
+        let removed = 0;
+        const clearAll = db.transaction(() => {
+            db.prepare('DELETE FROM chat_mentions WHERE channel_id = ?').run(channel.id);
+            db.prepare('DELETE FROM chat_reads WHERE channel_id = ?').run(channel.id);
+            removed = db.prepare('DELETE FROM chat_messages WHERE channel_id = ?').run(channel.id).changes;
+        });
+        clearAll();
+
+        ctx.ws.broadcast('cleared', { channelId: channel.id });
+        ctx.log.warn({ evt: 'chat.cleared', channel: channel.name, count: removed, by: session.username },
+            `${session.username} cleared ${removed} message(s) from #${channel.name}`);
+        json(200, { ok: true, removed });
+    }, { auth: 'admin' });
+
     // ── retention ────────────────────────────────────────────────────────────
     const sweep = () => {
         const days = ctx.settings.get('retentionDays');

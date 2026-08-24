@@ -12,6 +12,7 @@
 // cannot be used to set a password hash directly and sidestep argon2.
 
 import { HttpError } from '../server.js';
+import { ensureDefaults } from '../../channels/index.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { listUsers, getUserById, setPassword, UserError } from '../../users/index.js';
@@ -59,7 +60,16 @@ const stripSecrets = (row) => {
     return out;
 };
 
-export function registerAdminRoutes({ router, db, config, log, moduleHost, peers, sfu, auth }) {
+export function registerAdminRoutes({ router, db, config, log, moduleHost, peers, sfu, auth, ws, setup }) {
+    /** Close every live socket an account holds — the server-side half of a kick. */
+    const kickUser = (userId, code = 4003, reason = 'account changed') => {
+        let kicked = 0;
+        for (const peer of peers?.forUser?.(userId) ?? []) {
+            try { peer.ws.close(code, reason); } catch { /* going anyway */ }
+            kicked += 1;
+        }
+        return kicked;
+    };
     const admin = (method, path, handler, opts = {}) =>
         router.register('core', method, path, handler, { ...opts, auth: 'admin' });
 
@@ -216,12 +226,24 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
     // ── members ──────────────────────────────────────────────────────────────
     admin('GET', '/api/admin/members', ({ json }) => {
         const live = new Map(peers.all.map((p) => [p.userId, p]));
+        // Who brought whom: the redemption ledger joined back to the invite's creator.
+        const flags = new Map(db.prepare(
+            'SELECT id, is_disabled, must_reset FROM users'
+        ).all().map((r) => [r.id, { banned: r.is_disabled === 1, mustReset: r.must_reset === 1 }]));
+        const sponsors = new Map(db.prepare(`
+            SELECT r.user_id AS userId, u.username AS invitedBy
+            FROM invite_redemptions r
+            JOIN invites i ON i.code = r.code
+            LEFT JOIN users u ON u.id = i.created_by
+        `).all().map((row) => [row.userId, row.invitedBy]));
 
         json(200, {
             members: listUsers(db).map((u) => {
                 const peer = live.get(u.id);
                 return {
                     ...u,
+                    invitedBy: sponsors.get(u.id) ?? null,
+                    ...(flags.get(u.id) ?? { banned: false, mustReset: false }),
                     // Presence is live state, not a stored column, which is why this view
                     // exists separately from the raw table browser.
                     state: peer
@@ -241,22 +263,77 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
         const user = getUserById(db, params.id);
         if (!user) throw new HttpError(404, 'No such user.');
 
-        try {
-            await setPassword(db, user.id, body?.password);
-        } catch (err) {
-            if (err instanceof UserError) throw new HttpError(400, err.message, { field: err.field });
-            throw err;
+        if (body?.password) {
+            // The old form: the admin chooses the password and tells the person.
+            try {
+                await setPassword(db, user.id, body.password);
+            } catch (err) {
+                if (err instanceof UserError) throw new HttpError(400, err.message, { field: err.field });
+                throw err;
+            }
+        } else {
+            // The graceful form: nobody — not even the admin — knows the next password.
+            // The account keeps its old hash but cannot COMPLETE a sign-in until its
+            // owner chooses a new password at the login screen.
+            db.prepare('UPDATE users SET must_reset = 1 WHERE id = ?').run(user.id);
         }
 
-        // Whoever knew the old password is signed out. If an admin is resetting it, that
-        // is the outcome you want.
+        // Whoever knew the old password is signed out, and any LIVE connection is cut —
+        // "kicked to the login screen", exactly as it should read from their side.
         const revoked = revokeAllForUser(db, user.id);
+        const kicked = kickUser(user.id, 4003, 'password reset');
         audit(session, 'ADMIN_PASSWORD_RESET', user.username);
-        log.warn({ evt: 'admin.password_reset', target: user.username, by: session.username, revoked },
+        log.warn({ evt: 'admin.password_reset', target: user.username, by: session.username, revoked, kicked },
             `${session.username} reset the password for ${user.username}`);
 
-        json(200, { ok: true, sessionsRevoked: revoked });
+        json(200, { ok: true, sessionsRevoked: revoked, kicked, mustReset: !body?.password });
     }, { maxBytes: 2_000 });
+
+    admin('POST', '/api/admin/members/:id/ban', ({ params, body, session, json }) => {
+        const user = getUserById(db, params.id);
+        if (!user) throw new HttpError(404, 'No such user.');
+        if (user.id === session.userId) throw new HttpError(400, 'You cannot ban yourself.');
+
+        const banned = body?.banned !== false;
+        db.prepare('UPDATE users SET is_disabled = ? WHERE id = ?').run(banned ? 1 : 0, user.id);
+        const revoked = banned ? revokeAllForUser(db, user.id) : 0;
+        const kicked = banned ? kickUser(user.id, 4004, 'banned') : 0;
+        audit(session, banned ? 'ADMIN_BANNED' : 'ADMIN_UNBANNED', user.username);
+        log.warn({ evt: 'admin.ban', target: user.username, by: session.username, banned },
+            `${session.username} ${banned ? 'banned' : 'unbanned'} ${user.username}`);
+        json(200, { ok: true, banned, sessionsRevoked: revoked, kicked });
+    }, { maxBytes: 1_000 });
+
+    admin('DELETE', '/api/admin/members/:id', ({ params, session, json }) => {
+        const user = getUserById(db, params.id);
+        if (!user) throw new HttpError(404, 'No such user.');
+        if (user.id === session.userId) throw new HttpError(400, 'You cannot remove your own account from here.');
+
+        revokeAllForUser(db, user.id);
+        kickUser(user.id, 4004, 'account removed');
+        const wipeOne = db.transaction(() => {
+            db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+            db.prepare('DELETE FROM channel_members WHERE user_id = ?').run(user.id);
+            db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+        });
+        wipeOne();
+        audit(session, 'ADMIN_REMOVED_USER', user.username);
+        log.warn({ evt: 'admin.user_removed', target: user.username, by: session.username },
+            `${session.username} removed the account ${user.username}`);
+        json(200, { ok: true });
+    });
+
+    admin('PUT', '/api/admin/members/:id', ({ params, body, session, json }) => {
+        const user = getUserById(db, params.id);
+        if (!user) throw new HttpError(404, 'No such user.');
+        const displayName = String(body?.displayName ?? '').trim();
+        if (!displayName || displayName.length > 40) {
+            throw new HttpError(400, 'A display name is 1 to 40 characters.');
+        }
+        db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, user.id);
+        audit(session, 'ADMIN_RENAMED_USER', `${user.username} -> ${displayName}`);
+        json(200, { ok: true });
+    }, { maxBytes: 1_000 });
 
     admin('POST', '/api/admin/members/:id/admin', ({ params, body, session, json }) => {
         const user = getUserById(db, params.id);
@@ -321,6 +398,51 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
     });
 
     // ── settings ─────────────────────────────────────────────────────────────
+    admin('POST', '/api/admin/wipe', ({ body, session, json }) => {
+        // The one confirmation the SERVER checks: the instance's exact name. The client
+        // adds its own dialog and puzzle on top; this is the part that cannot be bypassed
+        // by calling the API directly.
+        if (String(body?.confirm ?? '') !== String(config.instanceName)) {
+            throw new HttpError(400, 'Type the exact server name to confirm.');
+        }
+
+        log.warn({ evt: 'admin.WIPE', by: session.username },
+            `${session.username} destroyed all data on "${config.instanceName}"`);
+
+        // Answer first: the requester's own session is among the casualties.
+        json(200, { ok: true, message: 'Everything is gone. The server is back at first run.' });
+
+        setImmediate(() => {
+            // Every live connection is cut before the ground vanishes beneath it.
+            for (const peer of peers.all) {
+                try { peer.ws.close(4005, 'server wiped'); }
+                catch { /* going regardless */ }
+            }
+
+            // The migration ledger survives: schemas still exist after DELETE, so wiping
+            // the ledger would make the next boot re-run CREATE TABLE into live tables.
+            const tables = db.prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).all().map((t) => t.name).filter((t) => t !== '_migrations');
+            const razeAll = db.transaction(() => {
+                for (const t of tables) db.prepare(`DELETE FROM "${t}"`).run();
+            });
+            razeAll();
+
+            // The server remains, and it remembers how to be born: default channels
+            // reseed and first-run setup re-arms with a fresh token in the journal.
+            try { ensureDefaults(db, log); } catch { /* seeded on next boot instead */ }
+            try {
+                setup?.begin({
+                    httpPort: config.httpPort,
+                    httpBind: config.httpBind,
+                    instanceName: config.instanceName,
+                    version: '(after wipe)',
+                });
+            } catch { /* a restart re-arms it regardless */ }
+        });
+    }, { maxBytes: 1_000 });
+
     admin('GET', '/api/admin/settings', ({ json }) => {
         json(200, { groups: moduleHost.settingsView() });
     });

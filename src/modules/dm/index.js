@@ -55,7 +55,7 @@ export function register(ctx) {
         LIMIT ?`);
     const lastMessage = db.prepare(`
         SELECT body, author_id AS authorId, created_at AS createdAt FROM dm_messages
-        WHERE thread_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`);
+        WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`);
 
     const upsertRead = db.prepare(`
         INSERT INTO dm_reads (user_id, thread_id, last_created_at, last_id)
