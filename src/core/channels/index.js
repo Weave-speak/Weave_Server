@@ -25,7 +25,7 @@ const COLUMNS = `
     id, name, kind, position,
     allow_voice AS allowVoice, allow_text AS allowText, allow_video AS allowVideo,
     is_default AS isDefault, created_at AS createdAt,
-    private, created_by AS createdBy, last_occupied_at AS lastOccupiedAt
+    private, created_by AS createdBy, last_occupied_at AS lastOccupiedAt, system
 `;
 
 const toChannel = (row) => (row ? {
@@ -35,6 +35,7 @@ const toChannel = (row) => (row ? {
     allowVideo: row.allowVideo === 1,
     isDefault: row.isDefault === 1,
     private: row.private === 1,
+    system: row.system === 1,
 } : null);
 
 function validateName(name) {
@@ -72,7 +73,7 @@ export function ensureDefaults(db, log) {
 export function createChannel(db, {
     name, kind = 'both', position = null,
     allowVoice = true, allowText = true, allowVideo = true, isDefault = false,
-    private: isPrivate = false, createdBy = null,
+    private: isPrivate = false, createdBy = null, system = false,
 }) {
     const cleanName = validateName(name);
     if (!KINDS.includes(kind)) {
@@ -92,11 +93,11 @@ export function createChannel(db, {
 
         db.prepare(`
             INSERT INTO channels (id, name, kind, position, allow_voice, allow_text, allow_video, is_default,
-                                  private, created_by, last_occupied_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  private, created_by, last_occupied_at, system)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(id, cleanName, kind, pos,
             allowVoice ? 1 : 0, text ? 1 : 0, allowVideo ? 1 : 0, isDefault ? 1 : 0,
-            isPrivate ? 1 : 0, createdBy, isPrivate ? Date.now() : null);
+            isPrivate ? 1 : 0, createdBy, isPrivate ? Date.now() : null, system ? 1 : 0);
 
         // The maker is the first member; an empty members list would be a room nobody
         // could ever enter.
@@ -147,9 +148,13 @@ export function listMembers(db, channelId) {
  * enforced where the roster is broadcast, and text is off in private rooms entirely.
  */
 export function visibleChannels(db, userId) {
-    return listChannels(db).map((c) => (c.private
-        ? { ...c, member: isMember(db, c.id, userId) }
-        : c));
+    return listChannels(db)
+        // System rooms are plumbing, not places: a DM call must not appear in anyone's
+        // sidebar — including its own participants', whose client knows it another way.
+        .filter((c) => !c.system)
+        .map((c) => (c.private
+            ? { ...c, member: isMember(db, c.id, userId) }
+            : c));
 }
 
 export function touchOccupancy(db, channelId) {
@@ -158,10 +163,11 @@ export function touchOccupancy(db, channelId) {
 
 /** The channel a client lands in when it does not ask for one. */
 export function defaultChannel(db) {
-    const explicit = db.prepare(`SELECT ${COLUMNS} FROM channels WHERE is_default = 1 LIMIT 1`).get();
+    const explicit = db.prepare(`SELECT ${COLUMNS} FROM channels WHERE is_default = 1 AND system = 0 LIMIT 1`).get();
     if (explicit) return toChannel(explicit);
-    // A server whose default was deleted should still work.
-    return toChannel(db.prepare(`SELECT ${COLUMNS} FROM channels ORDER BY position, name LIMIT 1`).get());
+    // A server whose default was deleted should still work — but never by dropping
+    // someone into a DM call.
+    return toChannel(db.prepare(`SELECT ${COLUMNS} FROM channels WHERE system = 0 ORDER BY position, name LIMIT 1`).get());
 }
 
 export function updateChannel(db, id, changes) {

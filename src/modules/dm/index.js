@@ -11,6 +11,8 @@
 // page one can page the other.
 
 import crypto from 'node:crypto';
+import { createChannel, deleteChannel, addMember } from '../../core/channels/index.js';
+import { HOOKS } from '../../core/hooks/index.js';
 
 const PAGE_DEFAULT = 50;
 const PAGE_MAX = 100;
@@ -207,6 +209,129 @@ export function register(ctx) {
 
         send('accepted', { id: record.id, createdAt: record.createdAt });
         toParties(thread, 'message', { message: record });
+    });
+
+    /* ── calls ──────────────────────────────────────────────────────────────
+     *
+     * A DM call is a HIDDEN SYSTEM ROOM: private (occupants masked from everyone
+     * else), system (listed to no one, not even its two members — their clients know
+     * it by the call state instead), members exactly the pair. Everything else rides
+     * proven machinery: the move guards, the SFU router per channel, the client's
+     * stage — which is what makes camera and screen share work in calls for free.
+     */
+
+    const RING_MS = 45_000;
+    const calls = new Map();   // threadId -> { channelId, state: 'ringing'|'live', ringTimer }
+
+    const toUser = (userId, type, payload) => {
+        for (const peer of ctx.peers.forUser(userId)) ctx.ws.send(peer.ws, type, payload);
+    };
+
+    const endCall = (threadId, reason) => {
+        const call = calls.get(threadId);
+        if (!call) return;
+        calls.delete(threadId);
+        clearTimeout(call.ringTimer);
+        const thread = threadById.get(threadId);
+        if (thread) {
+            for (const userId of [thread.user_a, thread.user_b]) {
+                toUser(userId, 'call_ended', { threadId, reason });
+            }
+        }
+        // The room dies once nobody is standing in it; clients leave on call_ended.
+        const sweep = () => {
+            if (ctx.peers.inChannel(call.channelId).length === 0) {
+                try { deleteChannel(ctx.db.handle, call.channelId); } catch { /* already gone */ }
+                return true;
+            }
+            return false;
+        };
+        if (!sweep()) {
+            const timer = setInterval(() => { if (sweep()) clearInterval(timer); }, 2000);
+            timer.unref?.();
+        }
+    };
+
+    ctx.ws.on('call', ({ ws, msg, fail }) => {
+        const peer = ctx.peers.get(ws.cid);
+        if (!peer) return;
+        const thread = threadById.get(String(msg.threadId ?? ''));
+        if (!thread || !isParty(thread, peer.userId)) return fail(ws, 'no_thread', 'No such thread.');
+
+        const existing = calls.get(thread.id);
+        if (existing) {
+            // Joining a call that is already ringing or live is answering it.
+            ctx.actions.movePeer(peer.cid, existing.channelId, 'dm-call');
+            if (existing.state === 'ringing') {
+                existing.state = 'live';
+                clearTimeout(existing.ringTimer);
+                for (const userId of [thread.user_a, thread.user_b]) {
+                    toUser(userId, 'call_live', { threadId: thread.id });
+                }
+            }
+            return;
+        }
+
+        const channel = createChannel(db, {
+            name: 'Private call',
+            kind: 'both',
+            private: true,
+            system: true,
+            createdBy: peer.userId,
+        });
+        addMember(db, channel.id, thread.user_a, peer.userId);
+        addMember(db, channel.id, thread.user_b, peer.userId);
+
+        const ringTimer = setTimeout(() => endCall(thread.id, 'no_answer'), RING_MS);
+        ringTimer.unref?.();
+        calls.set(thread.id, { channelId: channel.id, state: 'ringing', ringTimer });
+
+        ctx.actions.movePeer(peer.cid, channel.id, 'dm-call');
+        toUser(otherOf(thread, peer.userId), 'ring', {
+            threadId: thread.id,
+            from: { username: peer.username, displayName: peer.displayName ?? peer.username },
+        });
+        ctx.log.info({ evt: 'dm.call', from: peer.username }, `${peer.username} started a private call`);
+    });
+
+    ctx.ws.on('accept', ({ ws, msg, fail }) => {
+        const peer = ctx.peers.get(ws.cid);
+        if (!peer) return;
+        const thread = threadById.get(String(msg.threadId ?? ''));
+        const call = thread && calls.get(thread.id);
+        if (!thread || !call || !isParty(thread, peer.userId)) return fail(ws, 'no_call', 'That call is over.');
+
+        clearTimeout(call.ringTimer);
+        call.state = 'live';
+        ctx.actions.movePeer(peer.cid, call.channelId, 'dm-call');
+        for (const userId of [thread.user_a, thread.user_b]) {
+            toUser(userId, 'call_live', { threadId: thread.id });
+        }
+    });
+
+    ctx.ws.on('decline', ({ ws, msg }) => {
+        const peer = ctx.peers.get(ws.cid);
+        const thread = peer && threadById.get(String(msg.threadId ?? ''));
+        if (!thread || !isParty(thread, peer.userId)) return;
+        if (calls.get(thread.id)?.state === 'ringing') endCall(thread.id, 'declined');
+    });
+
+    // A live call whose room loses a participant is over; the other side is told rather
+    // than left talking to a router. Ringing calls keep their lone caller waiting.
+    const watch = ({ peer, from }) => {
+        for (const [threadId, call] of calls) {
+            if (call.state !== 'live') continue;
+            if (from === call.channelId || peer?.channelId === call.channelId) {
+                const inside = ctx.peers.inChannel(call.channelId).length;
+                if (inside <= 1) endCall(threadId, 'left');
+            }
+        }
+    };
+    ctx.hooks.on(HOOKS.PEER_MOVE, watch);
+    ctx.hooks.on(HOOKS.PEER_LEAVE, ({ peer }) => watch({ peer, from: peer?.channelId }));
+
+    ctx.onUnload(() => {
+        for (const threadId of [...calls.keys()]) endCall(threadId, 'server');
     });
 
     ctx.ws.on('read', ({ ws, msg }) => {

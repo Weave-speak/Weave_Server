@@ -187,3 +187,75 @@ test('the rail answers with unread counts, and reading clears them', async (t) =
     const after = await h.call('GET', '/api/dm/threads', { token: kes.token });
     assert.equal(after.body.threads[0].unread, 0);
 });
+
+test('a call is a hidden room: ring, accept, talk, end — invisible throughout', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const moth = await h.mint('moth');
+
+    const thread = (await h.call('POST', '/api/dm/threads', {
+        token: h.adminToken, body: { userId: kes.user.id },
+    })).body.thread;
+
+    const a = await h.connect(h.adminToken);
+    const b = await h.connect(kes.token);
+    const outsider = await h.connect(moth.token);
+
+    // A rings; A is moved into the call room; B hears the ring.
+    a.send('dm:call', { threadId: thread.id });
+    const ring = await b.expect('dm:ring');
+    assert.equal(ring.from.username, 'admin');
+    const aMoved = await a.expect('moved');
+    assert.equal(aMoved.channel.system, true);
+    assert.equal(aMoved.channel.private, true);
+
+    // The room is listed to NOBODY — not the participants, not the outsider.
+    for (const [who, token] of [['caller', h.adminToken], ['callee', kes.token], ['outsider', moth.token]]) {
+        const channels = (await h.call('GET', '/api/channels', { token })).body.channels;
+        assert.ok(!channels.some((c) => c.id === aMoved.channel.id), `${who} must not see the call room listed`);
+    }
+    // And the outsider reads the caller as merely online, nowhere.
+    const seen = await outsider.expect('peer_joined');
+    assert.equal(seen.peer.username, 'admin');
+    assert.equal(seen.peer.channelId, null, 'the mask holds for call rooms');
+
+    // B accepts: both stand together, both told live.
+    b.send('dm:accept', { threadId: thread.id });
+    const bMoved = await b.expect('moved');
+    assert.equal(bMoved.channel.id, aMoved.channel.id);
+    await a.expect('dm:call_live');
+    await b.expect('dm:call_live');
+    const together = bMoved.peers.find((p) => p.username === 'admin');
+    assert.equal(together.channelId, aMoved.channel.id, 'members see each other in the call');
+
+    // B hangs up (leaves): A is told the call ended, and the room dies once empty.
+    b.send('leave');
+    await b.expect('left');
+    const ended = await a.expect('dm:call_ended');
+    assert.equal(ended.reason, 'left');
+    a.send('leave');
+    await a.expect('left');
+    await new Promise((r) => setTimeout(r, 2600));
+    const after = await h.call('GET', '/api/channels', { token: h.adminToken });
+    assert.ok(!after.body.channels.some((c) => c.id === aMoved.channel.id), 'the room is gone');
+});
+
+test('a declined ring ends cleanly for both sides', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const thread = (await h.call('POST', '/api/dm/threads', {
+        token: h.adminToken, body: { userId: kes.user.id },
+    })).body.thread;
+
+    const a = await h.connect(h.adminToken);
+    const b = await h.connect(kes.token);
+    a.send('dm:call', { threadId: thread.id });
+    await b.expect('dm:ring');
+    await a.expect('moved');
+    b.send('dm:decline', { threadId: thread.id });
+    const ended = await a.expect('dm:call_ended');
+    assert.equal(ended.reason, 'declined');
+    await b.expect('dm:call_ended');
+});
