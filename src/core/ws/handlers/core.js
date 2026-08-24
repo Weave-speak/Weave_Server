@@ -56,29 +56,75 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
             throw err;
         }
 
+        // Standing anywhere is OPTIONAL: autoJoin false arrives signed in but in no
+        // voice room — reading everything, heard by no one — until a room is chosen.
+        // A remembered pure-text channel cannot be stood in either way.
         const requested = msg.channelId ? getChannel(db, msg.channelId) : null;
-        const channel = requested ?? defaultChannel(db);
-        if (!channel) return fail(ws, 'no_channels', 'This server has no channels configured.');
+        const wantRoom = msg.autoJoin !== false;
+        const channel = wantRoom
+            ? ((requested && requested.kind !== 'text' ? requested : null) ?? defaultChannel(db))
+            : null;
+        if (wantRoom && !channel) {
+            return fail(ws, 'no_channels', 'This server has no channels configured.');
+        }
 
         ws.session = session;
-        const peer = peers.add(ws, session, channel.id, protocol);
+        const peer = peers.add(ws, session, channel?.id ?? null, protocol);
         touchLastSeen(db, session.userId);
 
         ws.log = log.child({ cid: ws.cid, user: session.username });
-        ws.log.info({ evt: 'peer.joined', channel: channel.name },
-            `${session.username} joined ${channel.name}`);
+        ws.log.info({ evt: 'peer.joined', channel: channel?.name ?? '(nowhere)' },
+            `${session.username} joined ${channel ? channel.name : 'without a room'}`);
 
         send('joined', {
             protocol,
             self: PeerRegistry.publicView(peer),
             channel,
-            rtpCapabilities: sfu.rtpCapabilities(channel.id),
-            peers: peers.channelSnapshot(channel.id, ws.cid),
+            // The WHOLE roster, not one room's: the sidebar shows who is standing where
+            // across the server, and a fresh client must not have to wait for movement
+            // to find out.
+            peers: peers.snapshot(ws.cid),
+            ...(channel ? { rtpCapabilities: sfu.rtpCapabilities(channel.id) } : {}),
         });
 
-        toChannel(channel.id, 'peer_joined', { peer: PeerRegistry.publicView(peer) }, ws.cid);
+        // Everyone hears about an arrival, wherever they stand — the frame carries the
+        // channel, so every sidebar files them correctly.
+        wsServer.broadcast('peer_joined', { peer: PeerRegistry.publicView(peer) },
+            (sock) => sock.cid !== ws.cid && peers.get(sock.cid));
         hooks.emit(HOOKS.PEER_JOIN, { peer, channel });
     }, { auth: 'none' });
+
+    // ── leaving a room without leaving the server ────────────────────────────
+    // The disconnect button: media closes, presence stays. The peer stands nowhere,
+    // reading whatever they like, until they pick a room again.
+    registry.register('core', 'leave', ({ ws, send }) => {
+        const peer = peers.get(ws.cid);
+        if (!peer) return;
+        const from = peer.channelId;
+        if (from === null) return send('left', { channel: null });
+
+        // The same teardown a cross-worker move does: transports close, which closes
+        // producers and fires producerclose on every consumer elsewhere — the normal path.
+        for (const consumer of peer.consumers.values()) {
+            try { consumer.close(); } catch { /* already closed */ }
+        }
+        peer.consumers.clear();
+        for (const producer of peer.producers.values()) {
+            try { producer.close(); } catch { /* already closed */ }
+        }
+        peer.producers.clear();
+        for (const transport of peer.transports.values()) {
+            try { transport.close(); } catch { /* already closed */ }
+        }
+        peer.transports.clear();
+
+        peer.channelId = null;
+        send('left', { channel: null });
+        // An upsert everyone understands: the same peer, now standing nowhere.
+        wsServer.broadcast('peer_joined', { peer: PeerRegistry.publicView(peer) },
+            (sock) => sock.cid !== ws.cid && peers.get(sock.cid));
+        hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: null, reason: 'left' });
+    });
 
     // ── heartbeat ────────────────────────────────────────────────────────────
     // Browsers never surface protocol ping/pong to JS, so the client sends its own and

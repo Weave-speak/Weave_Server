@@ -82,11 +82,11 @@ export async function start(env = process.env) {
         onDisconnect: (sock) => {
             const peer = peers.remove(sock.cid);
             if (!peer) return;
-            // Closing the transports above stops the media; this tells the room.
-            ws.broadcast('peer_left', { cid: peer.cid, userId: peer.userId }, (other) => {
-                const o = peers.get(other.cid);
-                return o && o.channelId === peer.channelId;
-            });
+            // Closing the transports above stops the media; this tells EVERYONE — every
+            // sidebar shows every room, and a roomless reader going offline has to
+            // disappear from the members list too, which a room-scoped frame never did.
+            ws.broadcast('peer_left', { cid: peer.cid, userId: peer.userId },
+                (other) => Boolean(peers.get(other.cid)));
             hooks.emit(HOOKS.PEER_LEAVE, { peer });
         },
     });

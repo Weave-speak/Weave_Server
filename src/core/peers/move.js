@@ -59,7 +59,8 @@ export function movePeer({ peer, channel, peers, sfu, ws, hooks, reason = 'self'
     // So when the worker changes, the media path is torn down and the client is told to
     // build a new one. A rebuild costs a second or two of silence; the alternative costs
     // the whole call, silently.
-    const mediaReset = sfu.workerIndexFor(from) !== sfu.workerIndexFor(channel.id);
+    const mediaReset = from !== null
+        && sfu.workerIndexFor(from) !== sfu.workerIndexFor(channel.id);
     if (mediaReset) {
         for (const producer of peer.producers.values()) {
             try { producer.close(); } catch { /* already closed */ }
@@ -72,7 +73,11 @@ export function movePeer({ peer, channel, peers, sfu, ws, hooks, reason = 'self'
         peer.transports.clear();
     }
 
-    toChannel(from, 'peer_left', { cid: peer.cid, userId: peer.userId, moved: true }, peer.cid);
+    // The old room's clients drop their consumers of this peer on this frame; everyone
+    // else merely files the departure. Global, because every sidebar shows every room.
+    if (from !== null) {
+        toChannel(from, 'peer_left', { cid: peer.cid, userId: peer.userId, moved: true }, peer.cid);
+    }
     peer.channelId = channel.id;
 
     ws.send(peer.ws, 'moved', {
@@ -86,7 +91,8 @@ export function movePeer({ peer, channel, peers, sfu, ws, hooks, reason = 'self'
         peers: peers.channelSnapshot(channel.id, peer.cid),
     });
 
-    toChannel(channel.id, 'peer_joined', { peer: PeerRegistry.publicView(peer) }, peer.cid);
+    ws.broadcast('peer_joined', { peer: PeerRegistry.publicView(peer) },
+        (sock) => sock.cid !== peer.cid && peers.get(sock.cid));
     hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: channel.id, reason });
 
     return { moved: true, channel };

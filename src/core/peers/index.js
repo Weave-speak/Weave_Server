@@ -114,4 +114,9 @@ export class PeerRegistry {
     channelSnapshot(channelId, exceptCid = null) {
         return this.inChannel(channelId, exceptCid).map((p) => PeerRegistry.publicView(p));
     }
+
+    /** Everyone connected, wherever they stand — the roster a fresh client starts from. */
+    snapshot(exceptCid = null) {
+        return [...this.all].filter((p) => p.cid !== exceptCid).map((p) => PeerRegistry.publicView(p));
+    }
 }
