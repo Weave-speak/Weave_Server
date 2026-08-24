@@ -7,7 +7,10 @@ import { HttpError } from '../server.js';
 import { registerAuthRoutes } from './auth.js';
 import { registerAdminRoutes } from './admin.js';
 import { registerAdminStatic } from '../static.js';
-import { listChannels, getChannel, createChannel, updateChannel, deleteChannel, ChannelError } from '../../channels/index.js';
+import {
+    listChannels, visibleChannels, getChannel, createChannel, updateChannel, deleteChannel,
+    isMember, addMember, listMembers, ChannelError,
+} from '../../channels/index.js';
 import { createInvite, listInvites, revokeInvite, InviteError } from '../../invites/index.js';
 import { listUsers, getUserById } from '../../users/index.js';
 
@@ -23,8 +26,14 @@ export function registerCoreRoutes(deps) {
 
     // Every connected client rebuilds its sidebar from this. Sent after any channel
     // change, so a room created in the admin console — or from the client — appears for
-    // everyone at once instead of on their next sign-in.
-    const announceChannels = () => ws?.broadcast('channels', { channels: listChannels(db) });
+    // everyone at once instead of on their next sign-in. PER RECIPIENT, because a
+    // private room's membership flag differs by viewer.
+    const { peers } = deps;
+    const announceChannels = () => {
+        for (const peer of peers?.all ?? []) {
+            ws?.send(peer.ws, 'channels', { channels: visibleChannels(db, peer.userId) });
+        }
+    };
 
     registerAuthRoutes(deps);
     registerAdminRoutes(deps);
@@ -33,19 +42,62 @@ export function registerCoreRoutes(deps) {
     // ── Channels ─────────────────────────────────────────────────────────────
     // Readable by any signed-in user: the client builds its sidebar from this rather
     // than from a hardcoded list, which is the entire point of channels being data.
-    router.register('core', 'GET', '/api/channels', ({ json }) => {
-        json(200, { channels: listChannels(db) });
+    router.register('core', 'GET', '/api/channels', ({ session, json }) => {
+        json(200, { channels: visibleChannels(db, session.userId) });
     });
 
     router.register('core', 'POST', '/api/channels', ({ body, session, json }) => {
+        const wantPrivate = Boolean(body?.private);
+        // Public rooms are the server's furniture: administrators arrange those. A
+        // PRIVATE room is a huddle — any member may start one, provided the module
+        // that gives huddles their lifecycle (the expiry reaper) is running.
+        if (!wantPrivate && !session.isAdmin) {
+            throw new HttpError(403, 'Only an administrator can create public rooms.');
+        }
+        if (wantPrivate && !moduleHost.enabled.includes('private-channels')) {
+            throw new HttpError(403, 'Private rooms are switched off on this server.');
+        }
         try {
-            const channel = createChannel(db, body ?? {});
-            log.info({ evt: 'channel.created', channel: channel.name, by: session.username },
-                `${session.username} created channel "${channel.name}"`);
+            const channel = createChannel(db, {
+                ...(body ?? {}),
+                private: wantPrivate,
+                createdBy: wantPrivate ? session.userId : null,
+                // A huddle is never the landing room and never anyone's furniture.
+                ...(wantPrivate ? { isDefault: false, kind: 'both' } : {}),
+            });
+            log.info({ evt: 'channel.created', channel: channel.name, by: session.username, private: wantPrivate },
+                `${session.username} created ${wantPrivate ? 'private ' : ''}channel "${channel.name}"`);
             announceChannels();
-            json(201, { channel });
+            json(201, { channel: wantPrivate ? { ...channel, member: true } : channel });
         } catch (err) { throw asHttp(err); }
-    }, { auth: 'admin', maxBytes: 4_000 });
+    }, { maxBytes: 4_000 });
+
+    // ── private-room membership ──────────────────────────────────────────────
+    // Members add members: there are no roles, and a huddle you are in is yours to
+    // grow. Non-members get the same 404 for "no such room" and "not your room".
+
+    router.register('core', 'GET', '/api/channels/:id/members', ({ params, session, json }) => {
+        const channel = getChannel(db, params.id);
+        if (!channel?.private || !isMember(db, channel.id, session.userId)) {
+            throw new HttpError(404, 'No such room.');
+        }
+        json(200, { members: listMembers(db, channel.id) });
+    });
+
+    router.register('core', 'POST', '/api/channels/:id/members', ({ params, body, session, json }) => {
+        const channel = getChannel(db, params.id);
+        if (!channel?.private || !isMember(db, channel.id, session.userId)) {
+            throw new HttpError(404, 'No such room.');
+        }
+        const target = db.prepare('SELECT id, username FROM users WHERE id = ? AND is_disabled = 0')
+            .get(String(body?.userId ?? ''));
+        if (!target) throw new HttpError(404, 'No such person.');
+        addMember(db, channel.id, target.id, session.userId);
+        log.info({ evt: 'channel.member_added', channel: channel.name, target: target.username, by: session.username },
+            `${session.username} added ${target.username} to "${channel.name}"`);
+        announceChannels();
+        json(200, { ok: true, members: listMembers(db, channel.id) });
+    }, { maxBytes: 1_000 });
 
     router.register('core', 'PUT', '/api/channels/:id', ({ params, body, session, json }) => {
         if (!getChannel(db, params.id)) throw new HttpError(404, 'No such channel.');

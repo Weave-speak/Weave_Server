@@ -24,7 +24,8 @@ const NAME_MAX = 40;
 const COLUMNS = `
     id, name, kind, position,
     allow_voice AS allowVoice, allow_text AS allowText, allow_video AS allowVideo,
-    is_default AS isDefault, created_at AS createdAt
+    is_default AS isDefault, created_at AS createdAt,
+    private, created_by AS createdBy, last_occupied_at AS lastOccupiedAt
 `;
 
 const toChannel = (row) => (row ? {
@@ -33,6 +34,7 @@ const toChannel = (row) => (row ? {
     allowText: row.allowText === 1,
     allowVideo: row.allowVideo === 1,
     isDefault: row.isDefault === 1,
+    private: row.private === 1,
 } : null);
 
 function validateName(name) {
@@ -70,11 +72,15 @@ export function ensureDefaults(db, log) {
 export function createChannel(db, {
     name, kind = 'both', position = null,
     allowVoice = true, allowText = true, allowVideo = true, isDefault = false,
+    private: isPrivate = false, createdBy = null,
 }) {
     const cleanName = validateName(name);
     if (!KINDS.includes(kind)) {
         throw new ChannelError(`Channel kind must be one of: ${KINDS.join(', ')}`, 'kind');
     }
+    // No text in private rooms is a RULE, not a default: the occupants are the secret,
+    // and a searchable transcript would out-live and out-leak any roster.
+    const text = isPrivate ? false : allowText;
 
     const id = crypto.randomUUID();
     const pos = position ?? ((db.prepare('SELECT MAX(position) AS m FROM channels').get().m ?? -1) + 1);
@@ -85,10 +91,20 @@ export function createChannel(db, {
         if (isDefault) db.prepare('UPDATE channels SET is_default = 0').run();
 
         db.prepare(`
-            INSERT INTO channels (id, name, kind, position, allow_voice, allow_text, allow_video, is_default)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO channels (id, name, kind, position, allow_voice, allow_text, allow_video, is_default,
+                                  private, created_by, last_occupied_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(id, cleanName, kind, pos,
-            allowVoice ? 1 : 0, allowText ? 1 : 0, allowVideo ? 1 : 0, isDefault ? 1 : 0);
+            allowVoice ? 1 : 0, text ? 1 : 0, allowVideo ? 1 : 0, isDefault ? 1 : 0,
+            isPrivate ? 1 : 0, createdBy, isPrivate ? Date.now() : null);
+
+        // The maker is the first member; an empty members list would be a room nobody
+        // could ever enter.
+        if (isPrivate && createdBy) {
+            db.prepare(`
+                INSERT OR IGNORE INTO channel_members (channel_id, user_id, added_by, added_at)
+                VALUES (?, ?, ?, ?)`).run(id, createdBy, createdBy, Date.now());
+        }
     });
     insert();
 
@@ -101,6 +117,43 @@ export function getChannel(db, id) {
 
 export function listChannels(db) {
     return db.prepare(`SELECT ${COLUMNS} FROM channels ORDER BY position, name`).all().map(toChannel);
+}
+
+/** Whether this user may know what happens inside this channel. */
+export function isMember(db, channelId, userId) {
+    if (!userId) return false;
+    return Boolean(db.prepare(
+        'SELECT 1 FROM channel_members WHERE channel_id = ? AND user_id = ?').get(channelId, userId));
+}
+
+export function addMember(db, channelId, userId, addedBy = null) {
+    db.prepare(`
+        INSERT OR IGNORE INTO channel_members (channel_id, user_id, added_by, added_at)
+        VALUES (?, ?, ?, ?)`).run(channelId, userId, addedBy, Date.now());
+}
+
+export function listMembers(db, channelId) {
+    return db.prepare(`
+        SELECT u.id, u.username, u.display_name AS displayName
+        FROM channel_members m JOIN users u ON u.id = m.user_id
+        WHERE m.channel_id = ? ORDER BY u.username`).all(channelId);
+}
+
+/**
+ * The channels THIS user may see, with a membership flag on the private ones.
+ *
+ * A private room is listed for everyone — a locked door people can see beats a secret
+ * corridor — but its name and lock are ALL a non-member gets: the occupant secrecy is
+ * enforced where the roster is broadcast, and text is off in private rooms entirely.
+ */
+export function visibleChannels(db, userId) {
+    return listChannels(db).map((c) => (c.private
+        ? { ...c, member: isMember(db, c.id, userId) }
+        : c));
+}
+
+export function touchOccupancy(db, channelId) {
+    db.prepare('UPDATE channels SET last_occupied_at = ? WHERE id = ?').run(Date.now(), channelId);
 }
 
 /** The channel a client lands in when it does not ask for one. */

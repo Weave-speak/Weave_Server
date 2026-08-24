@@ -15,7 +15,8 @@
 
 import { PeerRegistry, SLOTS, isValidSlot } from '../../peers/index.js';
 import { movePeer } from '../../peers/move.js';
-import { getChannel, defaultChannel } from '../../channels/index.js';
+import { viewFor, snapshotFor } from '../../peers/visibility.js';
+import { getChannel, defaultChannel, isMember, touchOccupancy } from '../../channels/index.js';
 import { negotiate, ProtocolMismatchError } from '../../../protocol/index.js';
 import { touchLastSeen } from '../../users/index.js';
 import { HOOKS } from '../../hooks/index.js';
@@ -24,6 +25,18 @@ import { HOOKS } from '../../hooks/index.js';
 export const LEAVE_CLOSE_CODE = 4000;
 
 export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, hooks, ws: wsServer }) {
+    /**
+     * Announce a peer to every OTHER connection, masked per recipient: members of a
+     * private room see where they stand, everyone else sees them roomless.
+     */
+    const announcePeer = (peer, type = 'peer_joined') => {
+        const view = PeerRegistry.publicView(peer);
+        for (const other of peers.all) {
+            if (other.cid === peer.cid) continue;
+            wsServer.send(other.ws, type, { peer: viewFor(db, view, other.userId) });
+        }
+    };
+
     /** Tell everyone else in a channel about something. */
     const toChannel = (channelId, type, payload, exceptCid = null) =>
         wsServer.broadcast(type, payload, (sock) => {
@@ -59,7 +72,9 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         // Standing anywhere is OPTIONAL: autoJoin false arrives signed in but in no
         // voice room — reading everything, heard by no one — until a room is chosen.
         // A remembered pure-text channel cannot be stood in either way.
-        const requested = msg.channelId ? getChannel(db, msg.channelId) : null;
+        // A remembered private room is only re-entered by someone still on its list.
+        let requested = msg.channelId ? getChannel(db, msg.channelId) : null;
+        if (requested?.private && !isMember(db, requested.id, session.userId)) requested = null;
         const wantRoom = msg.autoJoin !== false;
         const channel = wantRoom
             ? ((requested && requested.kind !== 'text' ? requested : null) ?? defaultChannel(db))
@@ -82,15 +97,15 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
             channel,
             // The WHOLE roster, not one room's: the sidebar shows who is standing where
             // across the server, and a fresh client must not have to wait for movement
-            // to find out.
-            peers: peers.snapshot(ws.cid),
+            // to find out. Masked per viewer: private rooms keep their secret.
+            peers: snapshotFor(db, peers.snapshot(ws.cid), session.userId),
             ...(channel ? { rtpCapabilities: sfu.rtpCapabilities(channel.id) } : {}),
         });
 
         // Everyone hears about an arrival, wherever they stand — the frame carries the
-        // channel, so every sidebar files them correctly.
-        wsServer.broadcast('peer_joined', { peer: PeerRegistry.publicView(peer) },
-            (sock) => sock.cid !== ws.cid && peers.get(sock.cid));
+        // channel, so every sidebar files them correctly. Masked per recipient.
+        announcePeer(peer);
+        if (channel?.private) touchOccupancy(db, channel.id);
         hooks.emit(HOOKS.PEER_JOIN, { peer, channel });
     }, { auth: 'none' });
 
@@ -121,8 +136,9 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         peer.channelId = null;
         send('left', { channel: null });
         // An upsert everyone understands: the same peer, now standing nowhere.
-        wsServer.broadcast('peer_joined', { peer: PeerRegistry.publicView(peer) },
-            (sock) => sock.cid !== ws.cid && peers.get(sock.cid));
+        announcePeer(peer);
+        const fromChannel = getChannel(db, from);
+        if (fromChannel?.private) touchOccupancy(db, from);
         hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: null, reason: 'left' });
     });
 
@@ -354,10 +370,13 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         if (channel.kind === 'text') {
             return fail(ws, 'text_channel', `${channel.name} is a text channel — open it, no need to move.`);
         }
+        if (channel.private && !isMember(db, channel.id, peer.userId)) {
+            return fail(ws, 'not_a_member', `${channel.name} is private — a member has to add you.`);
+        }
         if (channel.id === peer.channelId) return send('moved', { channel, reason: 'self' });
 
         const from = peer.channelId;
-        movePeer({ peer, channel, peers, sfu, ws: wsServer, hooks, reason: 'self' });
+        movePeer({ db, peer, channel, peers, sfu, ws: wsServer, hooks, reason: 'self' });
         ws.log.info({ evt: 'peer.moved', from, to: channel.name },
             `${peer.username} moved to ${channel.name}`);
     });
@@ -372,7 +391,7 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
 
         const mover = peers.get(ws.cid);
         movePeer({
-            peer: target, channel, peers, sfu, ws: wsServer, hooks,
+            db, peer: target, channel, peers, sfu, ws: wsServer, hooks,
             // The reason reaches the moved client so it can say something true rather
             // than showing "moved by an administrator" for every kind of move.
             reason: 'admin', by: mover.displayName ?? mover.username,

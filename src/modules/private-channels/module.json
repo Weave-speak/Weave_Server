@@ -1,0 +1,9 @@
+{
+  "id": "private-channels",
+  "name": "Private rooms",
+  "version": "1.0.0",
+  "description": "Ad-hoc huddles any member can start. Occupants are hidden from non-members, there is no text chat inside, and a room that stands empty past the configured window is deleted. Disabling this module stops creation and expiry - it never exposes an existing room's occupants, which the core guards regardless.",
+  "requires": [],
+  "defaultEnabled": true,
+  "features": ["channels.private"]
+}

@@ -21,7 +21,7 @@ import { AdminRegistry } from './core/admin/registry.js';
 import { ModuleHost } from './core/modules/loader.js';
 import { createAuth, purgeExpiredSessions } from './core/auth/index.js';
 import { SetupState } from './core/setup/index.js';
-import { ensureDefaults, listChannels } from './core/channels/index.js';
+import { ensureDefaults, listChannels, visibleChannels } from './core/channels/index.js';
 import { registerCoreRoutes } from './core/http/routes/index.js';
 import { createSfu } from './core/sfu/index.js';
 import { PeerRegistry } from './core/peers/index.js';
@@ -134,9 +134,15 @@ export async function start(env = process.env) {
             const peer = peers.get(cid);
             const channel = getChannel(db, channelId);
             if (!peer || !channel) return false;
-            return movePeer({ peer, channel, peers, sfu, ws, hooks, reason }).moved;
+            return movePeer({ db, peer, channel, peers, sfu, ws, hooks, reason }).moved;
         },
         listChannels: () => listChannels(db),
+        /** Re-send every connected client ITS view of the channel list. */
+        announceChannels() {
+            for (const peer of peers.all) {
+                ws.send(peer.ws, 'channels', { channels: visibleChannels(db, peer.userId) });
+            }
+        },
     };
 
     const moduleHost = new ModuleHost({

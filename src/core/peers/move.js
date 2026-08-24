@@ -7,6 +7,8 @@
 // apart and behaved differently.
 
 import { PeerRegistry, SLOTS } from './index.js';
+import { viewFor } from './visibility.js';
+import { getChannel, touchOccupancy } from '../channels/index.js';
 import { HOOKS } from '../hooks/index.js';
 
 /**
@@ -16,7 +18,7 @@ import { HOOKS } from '../hooks/index.js';
  * administrator" and "you were moved for being idle" are different messages, and the
  * previous server showed the admin one for both.
  */
-export function movePeer({ peer, channel, peers, sfu, ws, hooks, reason = 'self', by = null }) {
+export function movePeer({ db, peer, channel, peers, sfu, ws, hooks, reason = 'self', by = null }) {
     const from = peer.channelId;
     if (from === channel.id) return { moved: false, channel };
 
@@ -91,8 +93,18 @@ export function movePeer({ peer, channel, peers, sfu, ws, hooks, reason = 'self'
         peers: peers.channelSnapshot(channel.id, peer.cid),
     });
 
-    ws.broadcast('peer_joined', { peer: PeerRegistry.publicView(peer) },
-        (sock) => sock.cid !== peer.cid && peers.get(sock.cid));
+    // Everyone refiles the mover — masked per recipient, so stepping INTO a private
+    // room looks to a non-member like stepping out of sight.
+    const view = PeerRegistry.publicView(peer);
+    for (const other of peers.all) {
+        if (other.cid === peer.cid) continue;
+        ws.send(other.ws, 'peer_joined', { peer: viewFor(db, view, other.userId) });
+    }
+    if (channel.private) touchOccupancy(db, channel.id);
+    if (from) {
+        const fromChannel = getChannel(db, from);
+        if (fromChannel?.private) touchOccupancy(db, from);
+    }
     hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: channel.id, reason });
 
     return { moved: true, channel };

@@ -51,7 +51,7 @@ function fakePeer() {
     };
 }
 
-function harness({ assignment = {}, allowVoice = true } = {}) {
+function harness({ assignment = {}, allowVoice = true, others = [] } = {}) {
     const sent = [];
     const broadcasts = [];
     return {
@@ -60,9 +60,12 @@ function harness({ assignment = {}, allowVoice = true } = {}) {
         peer: fakePeer(),
         channel: { id: 'c-b', name: 'The Library', allowVoice },
         sfu: fakeSfu(assignment),
-        peers: { get: () => null, channelSnapshot: () => [] },
+        // `all` feeds the per-recipient announcement; `db` answers the channel lookups
+        // the privacy mask and occupancy stamps make. Public channels, so no masking.
+        peers: { get: () => null, channelSnapshot: () => [], all: others },
+        db: { prepare: () => ({ get: () => undefined, run: () => {} }) },
         ws: {
-            send: (_sock, type, payload) => sent.push({ type, payload }),
+            send: (sock, type, payload) => sent.push({ sock, type, payload }),
             broadcast: (type, payload) => broadcasts.push({ type, payload }),
         },
         hooks: { emit: () => {} },
@@ -76,7 +79,7 @@ test('a move within one worker keeps the media path', () => {
     // still valid. Tearing them down would cost a second of silence for no reason, on what
     // is the ONLY kind of move a default single-worker server ever performs.
     const h = harness({ assignment: { 'c-a': 0, 'c-b': 0 } });
-    movePeer({ peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
+    movePeer({ db: h.db, peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
 
     assert.equal(moved(h).payload.mediaReset, false);
     assert.equal(h.peer.transports.size, 2, 'transports survive');
@@ -89,7 +92,7 @@ test('a move across workers tears the media path down', () => {
     const [send, recv] = [h.peer.transports.get('send'), h.peer.transports.get('recv')];
     const producer = h.peer.producers.get('audio');
 
-    movePeer({ peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
+    movePeer({ db: h.db, peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
 
     assert.equal(moved(h).payload.mediaReset, true, 'the client must be told to rebuild');
     assert.equal(send.closed, true);
@@ -105,7 +108,7 @@ test('consumers are closed either way', () => {
     for (const assignment of [{ 'c-a': 0, 'c-b': 0 }, { 'c-a': 0, 'c-b': 1 }]) {
         const h = harness({ assignment });
         const consumer = h.peer.consumers.get('x');
-        movePeer({ peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
+        movePeer({ db: h.db, peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
         assert.equal(consumer.closed, true);
         assert.equal(h.peer.consumers.size, 0);
     }
@@ -114,7 +117,7 @@ test('consumers are closed either way', () => {
 test('a channel that forbids voice closes the microphone, whatever the worker', () => {
     const h = harness({ assignment: { 'c-a': 0, 'c-b': 0 }, allowVoice: false });
     const producer = h.peer.producers.get('audio');
-    movePeer({ peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
+    movePeer({ db: h.db, peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
 
     assert.equal(producer.closed, true);
     assert.equal(h.peer.producers.has('audio'), false);
@@ -125,16 +128,19 @@ test('moving to the room you are already in does nothing at all', () => {
     const h = harness({ assignment: { 'c-a': 0 } });
     h.channel = { id: 'c-a', name: 'Same', allowVoice: true };
 
-    const result = movePeer({ peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
+    const result = movePeer({ db: h.db, peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks });
 
     assert.equal(result.moved, false);
     assert.equal(h.sent.length, 0, 'no frames');
     assert.equal(h.peer.transports.size, 2, 'and certainly no teardown');
 });
 
-test('the peer ends up in the new channel and the room is told', () => {
-    const h = harness({ assignment: { 'c-a': 0, 'c-b': 1 } });
-    movePeer({ peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks, reason: 'admin', by: 'Kestrel' });
+test('the peer ends up in the new channel and everyone is told', () => {
+    // The arrival is no longer a room-scoped broadcast: every connection gets the
+    // upsert directly (masked per recipient), so it shows in `sent`, not `broadcasts`.
+    const bystander = { cid: 'cid-2', userId: 'u-2', ws: { cid: 'cid-2' } };
+    const h = harness({ assignment: { 'c-a': 0, 'c-b': 1 }, others: [bystander] });
+    movePeer({ db: h.db, peer: h.peer, channel: h.channel, peers: h.peers, sfu: h.sfu, ws: h.ws, hooks: h.hooks, reason: 'admin', by: 'Kestrel' });
 
     assert.equal(h.peer.channelId, 'c-b');
     assert.equal(moved(h).payload.reason, 'admin');
@@ -142,5 +148,9 @@ test('the peer ends up in the new channel and the room is told', () => {
 
     const types = h.broadcasts.map((b) => b.type);
     assert.ok(types.includes('peer_left'), 'the old room hears the departure');
-    assert.ok(types.includes('peer_joined'), 'the new room hears the arrival');
+
+    const upsert = h.sent.find((m) => m.type === 'peer_joined');
+    assert.ok(upsert, 'every other connection hears the arrival directly');
+    assert.equal(upsert.sock, bystander.ws);
+    assert.equal(upsert.payload.peer.channelId, 'c-b');
 });
