@@ -302,6 +302,12 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         const peer = peers.get(ws.cid);
         const channel = getChannel(db, msg.channelId);
         if (!channel) return fail(ws, 'no_channel', 'No such channel.');
+        // A pure-text channel is a place you READ, not a place you stand. Reading is free
+        // to every member from anywhere; moving there would silently pull someone out of
+        // the voice room they are actually in.
+        if (channel.kind === 'text') {
+            return fail(ws, 'text_channel', `${channel.name} is a text channel — open it, no need to move.`);
+        }
         if (channel.id === peer.channelId) return send('moved', { channel, reason: 'self' });
 
         const from = peer.channelId;

@@ -111,7 +111,14 @@ export async function start(env = process.env) {
             version: pkg.version,
             protocol: { min: PROTOCOL.MIN, max: PROTOCOL.MAX },
             instance: { name: config.instanceName, registration: 'invite_only' },
-            features: [...CORE_FEATURES, ...moduleHost.enabled.map((id) => `module.${id}`)],
+            features: [
+                ...CORE_FEATURES,
+                ...moduleHost.enabled.map((id) => `module.${id}`),
+                // A module may announce finer-grained capabilities, so a client can ask
+                // "does this server broadcast chat anywhere" instead of guessing from
+                // version numbers.
+                ...moduleHost.enabled.flatMap((id) => moduleHost.manifestOf?.(id)?.features ?? []),
+            ],
             setupRequired: countAdmins() === 0,
         });
     }, { auth: 'none' });

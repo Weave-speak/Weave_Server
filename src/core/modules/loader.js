@@ -33,6 +33,10 @@ function validateManifest(manifest, dir) {
     if (manifest.requires && !Array.isArray(manifest.requires)) {
         problems.push('requires must be an array of module ids');
     }
+    if (manifest.features && !(Array.isArray(manifest.features)
+        && manifest.features.every((f) => typeof f === 'string'))) {
+        problems.push('features must be an array of strings');
+    }
     if (problems.length) {
         throw new ModuleError(`Invalid module.json in ${dir}:\n  - ${problems.join('\n  - ')}`);
     }
@@ -42,6 +46,9 @@ function validateManifest(manifest, dir) {
         version: manifest.version,
         description: manifest.description ?? '',
         requires: manifest.requires ?? [],
+        // Capability strings surfaced in /api/server-info while the module is enabled,
+        // so a client can ask for a behaviour by name instead of sniffing versions.
+        features: manifest.features ?? [],
         defaultEnabled: manifest.defaultEnabled !== false,
         dir,
     };
@@ -328,6 +335,11 @@ export class ModuleHost {
 
     get enabled() {
         return [...this.#active.keys()].sort();
+    }
+
+    /** The manifest of an ACTIVE module, for feature flags and the admin view. */
+    manifestOf(id) {
+        return this.#active.get(id)?.manifest ?? null;
     }
 
     /**

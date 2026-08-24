@@ -4,5 +4,10 @@
   "version": "1.0.0",
   "description": "Messages in channels, with history and a retention policy. Turn it off for a voice-only server.",
   "requires": [],
-  "defaultEnabled": true
+  "defaultEnabled": true,
+  "features": [
+    "chat.browse",
+    "chat.reads",
+    "chat.mentions"
+  ]
 }
