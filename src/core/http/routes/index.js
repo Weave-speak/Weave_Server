@@ -19,7 +19,12 @@ function asHttp(err) {
 }
 
 export function registerCoreRoutes(deps) {
-    const { router, db, log, moduleHost } = deps;
+    const { router, db, log, moduleHost, ws } = deps;
+
+    // Every connected client rebuilds its sidebar from this. Sent after any channel
+    // change, so a room created in the admin console — or from the client — appears for
+    // everyone at once instead of on their next sign-in.
+    const announceChannels = () => ws?.broadcast('channels', { channels: listChannels(db) });
 
     registerAuthRoutes(deps);
     registerAdminRoutes(deps);
@@ -37,6 +42,7 @@ export function registerCoreRoutes(deps) {
             const channel = createChannel(db, body ?? {});
             log.info({ evt: 'channel.created', channel: channel.name, by: session.username },
                 `${session.username} created channel "${channel.name}"`);
+            announceChannels();
             json(201, { channel });
         } catch (err) { throw asHttp(err); }
     }, { auth: 'admin', maxBytes: 4_000 });
@@ -47,6 +53,7 @@ export function registerCoreRoutes(deps) {
             const channel = updateChannel(db, params.id, body ?? {});
             log.info({ evt: 'channel.updated', channel: channel.name, by: session.username },
                 `${session.username} updated channel "${channel.name}"`);
+            announceChannels();
             json(200, { channel });
         } catch (err) { throw asHttp(err); }
     }, { auth: 'admin', maxBytes: 4_000 });
@@ -58,6 +65,7 @@ export function registerCoreRoutes(deps) {
             deleteChannel(db, params.id);
             log.warn({ evt: 'channel.deleted', channel: channel.name, by: session.username },
                 `${session.username} deleted channel "${channel.name}"`);
+            announceChannels();
             json(200, { ok: true });
         } catch (err) { throw asHttp(err); }
     }, { auth: 'admin' });
