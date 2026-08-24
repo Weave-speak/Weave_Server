@@ -1,0 +1,9 @@
+{
+  "id": "dm",
+  "name": "Direct messages",
+  "version": "1.0.0",
+  "description": "Private one-to-one threads between members: the left rail of the client. A thread exists once either person opens it and persists with the account. Messages are visible only to the two participants.",
+  "requires": [],
+  "defaultEnabled": true,
+  "features": ["dm.threads", "dm.reads"]
+}
