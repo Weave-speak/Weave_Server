@@ -11,7 +11,9 @@
 
 import { checkInvite, normaliseCode } from '../../invites/index.js';
 
-const RELEASES = 'https://github.com/Weave-speak/Weave_Client/releases/latest';
+const RELEASES_PAGE = 'https://github.com/Weave-speak/Weave_Client/releases/latest';
+const RELEASES_API = 'https://api.github.com/repos/Weave-speak/Weave_Client/releases?per_page=1';
+const CACHE_MS = 10 * 60 * 1000;
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -58,22 +60,60 @@ export function invitePage({ serverName, origin, code, valid }) {
   <h1>${esc(serverName)}</h1>
   <p>You have been invited. Weave is a self-hosted voice and text app — this invite signs
      you into this crew's own server.</p>
-  <a class="btn" href="${esc(deepLink)}">Open in Weave</a>
-  <a class="btn quiet" href="${esc(RELEASES)}">Download for Windows</a>
+  <a class="btn" id="open" href="${esc(deepLink)}">Open in Weave</a>
+  <a class="btn quiet" id="dl" href="/download/windows">Download for Windows</a>
+  <p class="hint" id="steps" hidden>Run the installer when it lands. Weave opens itself —
+     then press <b>Open in Weave</b> above and you arrive with everything filled in.
+     Keep this page open until then.</p>
   <div class="code">${esc(code)}</div>
-  <div class="hint">Your invite code — the app fills it in for you. After installing,
-       open this link again.</div>
+  <div class="hint">Your invite code — the app fills it in for you.</div>
+  <script>
+    document.getElementById('dl').addEventListener('click', function () {
+      document.getElementById('steps').hidden = false;
+      var open = document.getElementById('open');
+      open.textContent = 'Installed? Open in Weave';
+    });
+  </script>
   ` : `
   <h1>This invite is no longer valid</h1>
   <p>It may have been used, expired, or withdrawn. Ask whoever sent it for a fresh one.</p>
-  <a class="btn quiet" href="${esc(RELEASES)}">Get Weave anyway</a>
+  <a class="btn quiet" href="/download/windows">Get Weave anyway</a>
   `}
 </main>
 </body>
 </html>`;
 }
 
-export function registerInvitePage({ router, db, config }) {
+/**
+ * The one URL that always downloads the newest Windows installer.
+ *
+ * A 302 to the current GitHub release asset, so the bytes ride GitHub's CDN while the
+ * link people share stays this server's own and never goes stale. The lookup is cached;
+ * a lookup failure serves the last-known asset, and with no knowledge at all it falls
+ * back to the releases page rather than a dead end.
+ */
+export function createDownloadResolver(fetcher = fetch) {
+    let cached = { url: null, at: 0 };
+    return async function resolveLatestExe() {
+        if (cached.url && Date.now() - cached.at < CACHE_MS) return cached.url;
+        try {
+            const res = await fetcher(RELEASES_API, {
+                headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'weave-server' },
+            });
+            if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+            const [release] = await res.json();
+            const exe = release?.assets?.find((a) => a.name?.endsWith('.exe') && !a.name.includes('blockmap'));
+            if (exe?.browser_download_url) {
+                cached = { url: exe.browser_download_url, at: Date.now() };
+                return cached.url;
+            }
+        } catch { /* the stale answer below is still the best one available */ }
+        cached.at = Date.now();   // do not hammer a failing API
+        return cached.url ?? RELEASES_PAGE;
+    };
+}
+
+export function registerInvitePage({ router, db, config, resolveLatestExe = createDownloadResolver() }) {
     // A tiny in-memory limiter: this page is unauthenticated and enumerable-looking, so
     // an address gets a small budget and then silence. Codes are 128-bit-ish random, so
     // enumeration is hopeless anyway; the limiter just makes it expensive to try.
@@ -86,6 +126,13 @@ export function registerInvitePage({ router, db, config }) {
         seen.set(ip, hits);
         return true;
     };
+
+    router.register('core', 'GET', '/download/windows', async ({ ip, res, text }) => {
+        if (!allow(ip)) return text(429, 'Slow down.');
+        const target = await resolveLatestExe();
+        res.writeHead(302, { Location: target, 'Cache-Control': 'no-store' });
+        res.end();
+    }, { auth: 'none' });
 
     router.register('core', 'GET', '/invite/:code', ({ params, ip, req, text }) => {
         if (!allow(ip)) return text(429, 'Slow down.');

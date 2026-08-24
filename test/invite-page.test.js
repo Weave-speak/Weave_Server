@@ -59,7 +59,7 @@ test('a live invite renders the join page; a dead one says only that', async (t)
     assert.match(page.headers.get('content-type'), /text\/html/);
     assert.match(page.text, /weave:\/\/join\?server=/, 'the deep link is on the page');
     assert.match(page.text, new RegExp(invite.code), 'so is the code, for the manual path');
-    assert.match(page.text, /releases\/latest/, 'and the download');
+    assert.match(page.text, /\/download\/windows/, 'and the stable download URL');
     assert.match(page.text, /The &lt;Crew&gt;/, 'the server name is escaped, not trusted');
     assert.ok(!page.text.includes('<Crew>'), 'no raw markup from config');
 
@@ -67,4 +67,39 @@ test('a live invite renders the join page; a dead one says only that', async (t)
     assert.equal(dead.status, 200);
     assert.match(dead.text, /no longer valid/);
     assert.ok(!dead.text.includes('weave://join'), 'a dead code offers no deep link');
+});
+
+test('the stable download URL resolves, caches, and degrades honestly', async () => {
+    const { createDownloadResolver } = await import('../src/core/http/routes/invite-page.js');
+    let calls = 0;
+    const answer = {
+        ok: true,
+        json: async () => [{
+            assets: [
+                { name: 'Weave-Setup-9.9.9.exe.blockmap', browser_download_url: 'https://x/map' },
+                { name: 'Weave-Setup-9.9.9.exe', browser_download_url: 'https://x/Weave-Setup-9.9.9.exe' },
+            ],
+        }],
+    };
+    const resolve = createDownloadResolver(async () => { calls += 1; return answer; });
+
+    assert.equal(await resolve(), 'https://x/Weave-Setup-9.9.9.exe', 'the exe, never the blockmap');
+    assert.equal(await resolve(), 'https://x/Weave-Setup-9.9.9.exe');
+    assert.equal(calls, 1, 'the second answer came from cache');
+
+    // A resolver whose API is down keeps serving the page fallback rather than dying.
+    const dead = createDownloadResolver(async () => { throw new Error('offline'); });
+    assert.match(await dead(), /releases\/latest$/);
+});
+
+test('the download route answers with a redirect, never a dead end', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const res = await fetch(`http://127.0.0.1${''}`, { method: 'HEAD' }).catch(() => null);
+    void res;
+    const page = await h.call('GET', '/download/windows');
+    // Whatever the resolver knew, the answer is a redirect somewhere real. call() follows
+    // redirects, so a 200 here means the Location resolved; GitHub answers both the
+    // asset and the releases page.
+    assert.ok([200, 302].includes(page.status), String(page.status));
 });
