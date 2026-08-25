@@ -34,6 +34,12 @@ export function createWsServer({ registry, log, config, onDisconnect }) {
     }
 
     function fail(ws, code, message, detail) {
+        // Logged, not silent. Every refusal here is something a client asked for and did
+        // not get, so each one explains a user-visible failure — and a refusal the
+        // operator cannot see is exactly how "we can't hear each other" stayed a mystery
+        // while the journal showed a perfectly healthy server. The code alone, not the
+        // message or the detail, so this stays greppable without becoming noise.
+        ws.log?.info({ evt: 'ws.refused', code }, `Refused a request: ${code}`);
         send(ws, 'error', { code, message, ...(detail ? { detail } : {}) });
     }
 

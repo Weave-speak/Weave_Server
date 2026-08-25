@@ -168,18 +168,58 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
     }, { auth: 'none' });
 
     // ── transports ───────────────────────────────────────────────────────────
+    /**
+     * The peer's transport for a direction, treating a CLOSED one as absent.
+     *
+     * mediasoup keeps a closed transport object perfectly inspectable, so a stale map
+     * entry answers `has()` truthfully and every guard built on it silently means the
+     * opposite of what it reads. Asking "is there a usable transport" is the only
+     * question any caller here actually has.
+     */
+    const liveTransport = (peer, direction) => {
+        const transport = peer.transports.get(direction);
+        if (!transport) return null;
+        if (transport.closed) {
+            peer.transports.delete(direction);
+            return null;
+        }
+        return transport;
+    };
+
     registry.register('core', 'createTransport', async ({ ws, msg, send, fail }) => {
         const peer = peers.get(ws.cid);
         const direction = msg.direction;
         if (direction !== 'send' && direction !== 'recv') {
             return fail(ws, 'bad_direction', 'Transport direction must be "send" or "recv".');
         }
-        if (peer.transports.has(direction)) {
-            return fail(ws, 'transport_exists', `A ${direction} transport already exists.`);
+        // Asking for a transport REPLACES whatever this peer had for that direction.
+        //
+        // The old guard refused with "transport_exists", which protected nothing real: a
+        // client only asks when it has no usable transport of its own, and once it has
+        // dropped its end, the server's half is unreachable by anyone. Meanwhile the map
+        // entry was never deleted — not on close, not on DTLS ending — so after any
+        // client-side media rebuild (an ICE failure, a microphone disappearing, a
+        // recovery cycle) every subsequent request was refused for as long as the peer
+        // stayed in the room. The client could not rebuild and could not consume anyone;
+        // two people sat in a room unable to hear each other while the server logged
+        // nothing at all, because fail() was silent too. Both halves of that are fixed:
+        // this replaces rather than refuses, and fail() now logs.
+        const previous = peer.transports.get(direction);
+        if (previous) {
+            ws.log.info({ evt: 'transport.replaced', direction, closed: previous.closed },
+                `Replacing this peer's ${direction} transport`);
+            try { previous.close(); } catch { /* already gone */ }
+            peer.transports.delete(direction);
         }
 
         const transport = await sfu.createTransport(peer.channelId);
         peer.transports.set(direction, transport);
+
+        // The slot frees itself the moment the transport dies, whoever closed it and for
+        // whatever reason — DTLS ending, the router going away, an explicit close.
+        transport.observer.on('close', () => {
+            if (peer.transports.get(direction) === transport) peer.transports.delete(direction);
+        });
 
         transport.on('dtlsstatechange', (state) => {
             if (state === 'closed') transport.close();
@@ -204,7 +244,7 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
 
     registry.register('core', 'connectTransport', async ({ ws, msg, send, fail }) => {
         const peer = peers.get(ws.cid);
-        const transport = peer.transports.get(msg.direction);
+        const transport = liveTransport(peer, msg.direction);
         if (!transport) return fail(ws, 'no_transport', 'That transport does not exist.');
 
         await transport.connect({ dtlsParameters: msg.dtlsParameters });
@@ -234,7 +274,7 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
             return fail(ws, 'video_not_allowed', `Video is not enabled in ${channel.name}.`);
         }
 
-        const transport = peer.transports.get('send');
+        const transport = liveTransport(peer, 'send');
         if (!transport) return fail(ws, 'no_transport', 'Create a send transport first.');
 
         // Re-producing into an occupied slot replaces it. Closing the old producer first
@@ -305,7 +345,7 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
     // ── consuming ────────────────────────────────────────────────────────────
     registry.register('core', 'consume', async ({ ws, msg, send, fail }) => {
         const peer = peers.get(ws.cid);
-        const transport = peer.transports.get('recv');
+        const transport = liveTransport(peer, 'recv');
         if (!transport) return fail(ws, 'no_transport', 'Create a recv transport first.');
 
         const target = peers.get(msg.cid);

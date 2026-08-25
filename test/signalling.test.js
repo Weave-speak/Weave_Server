@@ -240,17 +240,57 @@ test('a transport offers both UDP and TCP candidates on one port', async (t) => 
     assert.equal(ports.size, 1, 'one port for everything — one firewall rule');
 });
 
-test('a second transport in the same direction is refused', async (t) => {
+test('asking for a transport again REPLACES it, so a client can rebuild its media path', async (t) => {
     const h = await launch();
     t.after(h.cleanup);
 
     const c = await h.connect();
     await join(c, h.adminToken);
     c.send('createTransport', { direction: 'send' });
-    await c.expect('transportCreated');
+    const first = await c.expect('transportCreated');
 
+    // This used to answer 'transport_exists', which was a real outage: a client closes
+    // its own transports whenever it rebuilds after an ICE failure, and the server's map
+    // entry was never deleted — so every attempt afterwards was refused for as long as
+    // the peer stayed in the room. Two people would sit in a channel unable to hear each
+    // other while the server looked perfectly healthy. A client only asks when it has no
+    // usable transport, so the request is honoured and a fresh one replaces the old.
     c.send('createTransport', { direction: 'send' });
-    assert.equal((await c.expect('error')).code, 'transport_exists');
+    const second = await c.expect('transportCreated');
+    assert.notEqual(second.id, first.id, 'a genuinely new transport, not the old one echoed back');
+});
+
+test('a rebuilt recv transport can still consume — the "we cannot hear each other" case', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    // Someone to listen to.
+    const speaker = await h.connect();
+    const speakerJoined = await join(speaker, h.adminToken);
+    speaker.send('createTransport', { direction: 'send' });
+    await speaker.expect('transportCreated');
+
+    const memberToken = await h.makeMember('listener');
+    const listener = await h.connect();
+    await join(listener, memberToken);
+
+    // The listener builds a recv transport, then rebuilds it — exactly what the client
+    // does after a recovery cycle. Consuming has to keep working across that.
+    listener.send('createTransport', { direction: 'recv' });
+    await listener.expect('transportCreated');
+    listener.send('createTransport', { direction: 'recv' });
+    await listener.expect('transportCreated');
+
+    // The consume is refused for a reason about the SPEAKER (they are not sending),
+    // never 'no_transport' — which is what a stale, unusable slot would have produced.
+    listener.send('consume', {
+        cid: speakerJoined.self.cid,
+        slot: 'audio',
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+    });
+    const reply = await listener.expect('error');
+    assert.equal(reply.code, 'no_producer',
+        'the rebuilt transport is usable; the only thing missing is the producer');
 });
 
 test('peers in a channel are told when someone joins and leaves', async (t) => {
