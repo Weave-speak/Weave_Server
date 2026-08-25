@@ -20,6 +20,7 @@
 // slower but it works, and the connection panel can then say something true.
 
 import os from 'node:os';
+import dgram from 'node:dgram';
 import mediasoup from 'mediasoup';
 
 /**
@@ -67,6 +68,39 @@ export const MEDIA_CODECS = [
  * No network call is made here — a server should not reach out to a third party during
  * boot just to learn its own address. `weave doctor` probes on demand instead.
  */
+/**
+ * The address this machine is actually reachable on from its own network.
+ *
+ * Picked by asking the routing table which local address would be used to reach the
+ * internet — NOT by taking the first non-internal interface, because this box also runs
+ * Docker and would happily hand out a `172.x` bridge address that no client can reach.
+ * No packet is sent: connect() on a UDP socket only fixes the local end.
+ */
+export function detectLocalAddress() {
+    return new Promise((resolve) => {
+        let settled = false;
+        const socket = dgram.createSocket('udp4');
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            try { socket.close(); } catch { /* never opened */ }
+            resolve(value);
+        };
+        // Never let a boot hang on this: without an answer the server still starts, it
+        // just cannot offer clients on its own network a direct path.
+        const timer = setTimeout(() => finish(null), 500);
+        socket.on('error', () => { clearTimeout(timer); finish(null); });
+        // connect() on a UDP socket sends nothing — it asks the routing table which local
+        // address WOULD be used, and binds that end. The destination is TEST-NET-3, which
+        // is reserved for documentation and routed nowhere.
+        socket.connect(53, '203.0.113.1', () => {
+            clearTimeout(timer);
+            const address = socket.address()?.address ?? null;
+            finish(address && address !== '0.0.0.0' ? address : null);
+        });
+    });
+}
+
 export function resolveAnnouncedAddress(config, log) {
     if (config.announcedAddress) {
         return { address: config.announcedAddress, source: 'configured' };
@@ -99,6 +133,17 @@ export async function createSfu({ config, log, hooks }) {
     const sfuLog = log.child({ mod: 'sfu' });
     const { address: announcedAddress, source } = resolveAnnouncedAddress(config, sfuLog);
 
+    // The second candidate: how clients on this machine's own network reach it directly.
+    const localAddress = await detectLocalAddress();
+    if (localAddress) {
+        sfuLog.info({ evt: 'sfu.local_address', localAddress },
+            `Clients on this network will be offered ${localAddress} directly`);
+    } else {
+        sfuLog.warn({ evt: 'sfu.local_address_unknown' },
+            "Could not work out this machine's own network address; clients on the same "
+            + 'network will have to reach the announced address through the router');
+    }
+
     const workers = [];
 
     for (let index = 0; index < config.sfuWorkers; index += 1) {
@@ -118,26 +163,37 @@ export async function createSfu({ config, log, hooks }) {
             process.exit(1);
         });
 
+        // Bind to the address this machine is really reachable on, not the wildcard.
+        //
+        // `exposeInternalIp` advertises the BIND address as a second candidate, for
+        // clients on the same network as the server. Bound to '0.0.0.0' it did exactly
+        // that — and advertised the literal string "0.0.0.0", an address nothing can ever
+        // connect to. Every client wasted an ICE check on it, and clients on the SAME LAN
+        // as the server were left with no local candidate at all: their only path was out
+        // to the announced public address and back in through the router, which many
+        // consumer routers cannot do (NAT hairpinning). When that router also cannot
+        // hairpin, ICE finds no working path whatsoever and the call connects, shows
+        // everyone present, and carries no audio in either direction.
+        const bindIp = localAddress ?? '0.0.0.0';
+        const exposeInternalIp = bindIp !== '0.0.0.0';
+
         const listenInfos = [
             {
                 protocol: 'udp',
-                ip: '0.0.0.0',
+                ip: bindIp,
                 announcedAddress,
                 port,
-                // Also advertise this machine's own address, so clients on the same LAN
-                // can reach it directly instead of hairpinning out through the router
-                // and back — many consumer routers cannot do that at all.
-                exposeInternalIp: true,
+                exposeInternalIp,
             },
             {
                 // Same port number on TCP. This is the fallback for networks that block
                 // UDP outright, and it costs one extra firewall rule rather than a
                 // separate port to remember.
                 protocol: 'tcp',
-                ip: '0.0.0.0',
+                ip: bindIp,
                 announcedAddress,
                 port,
-                exposeInternalIp: true,
+                exposeInternalIp,
             },
         ];
 

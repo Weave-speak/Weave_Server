@@ -1,6 +1,6 @@
 {
   "name": "weave-server",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Weave \u2014 self-hosted voice, video and text server with a modular feature system",
   "license": "AGPL-3.0-or-later",
   "type": "module",
