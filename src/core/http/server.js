@@ -99,6 +99,11 @@ export function createHttpServer({ config, log, router, auth, onUpgrade }) {
         }
 
         const { route, params } = found;
+        // Routes that stream a raw response (uploads) never touch json()/text(), which
+        // is where CORS lived — so cross-origin clients could upload an image and then
+        // be forbidden from ever seeing it. Stamped here, the headers cover every
+        // response shape a route can produce.
+        for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
         const ip = clientIp(req, config.trustedProxies);
         const reqLog = log.child({ ip: config.redactIps ? truncateIp(ip) : ip });
 
