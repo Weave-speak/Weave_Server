@@ -146,8 +146,25 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
     // Browsers never surface protocol ping/pong to JS, so the client sends its own and
     // this answers. A reply also proves the path is alive in both directions, which a
     // half-open socket through a tunnel otherwise hides.
-    registry.register('core', 'ping', ({ send, msg }) => {
-        send('pong', { t: msg.t ?? null });
+    registry.register('core', 'ping', ({ ws, send, msg }) => {
+        // The pong carries the room's producer truth. A ping only arrives over a
+        // provably healthy connection, which makes it the one reliable moment to
+        // reconcile — the previous production server learned this the hard way: a
+        // producer_new swallowed by a half-dead socket left one person silently unable
+        // to hear one other person until somebody rejoined. Client-side healing that
+        // reconciles against the client's own bookkeeping cannot recover from a missed
+        // frame, because the bookkeeping missed it too. This snapshot is the server's
+        // memory, not the client's.
+        const peer = peers.get(ws.cid);
+        const roomTruth = peer?.channelId
+            ? peers.inChannel(peer.channelId, ws.cid).map((p) => ({
+                cid: p.cid,
+                producers: [...p.producers.entries()].map(([slot, producer]) => ({
+                    slot, id: producer.id, kind: producer.kind, paused: producer.paused,
+                })),
+            }))
+            : null;
+        send('pong', { t: msg.t ?? null, ...(roomTruth ? { producers: roomTruth } : {}) });
     }, { auth: 'none' });
 
     // ── transports ───────────────────────────────────────────────────────────

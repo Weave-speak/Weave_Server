@@ -1,0 +1,11 @@
+{
+  "id": "link-preview",
+  "name": "Link previews",
+  "version": "1.0.0",
+  "description": "Fetches a shared link's title, description and image so the chat can show a card. All fetching happens server-side with private-network addresses refused.",
+  "requires": [],
+  "defaultEnabled": true,
+  "features": [
+    "chat.link-previews"
+  ]
+}

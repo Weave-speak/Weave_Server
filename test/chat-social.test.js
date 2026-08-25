@@ -96,7 +96,7 @@ async function launch() {
     };
 
     return {
-        app, call, mint, connect,
+        app, call, mint, connect, base,
         adminToken: admin.body.token,
         stop: () => { sockets.forEach((s) => { try { s.close(); } catch { /* closing */ } }); return app.stop(); },
     };
@@ -244,4 +244,73 @@ test('a topic is set by an admin, capped, and visible to everyone', async (t) =>
         token: kes.token, body: { topic: 'coup' },
     });
     assert.equal(mortal.status, 403, 'only admins arrange the furniture');
+});
+
+test('attachments ride messages in channels and DMs, URL derived server-side', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const room = (await h.call('GET', '/api/channels', { token: h.adminToken }))
+        .body.channels.find((c) => c.allowText);
+
+    // A real upload first: a 1x1 PNG.
+    const png = Buffer.from(
+        '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63640000000600023081d02f0000000049454e44ae426082', 'hex');
+    // call() JSON-encodes; an upload is a raw body, so fetch directly.
+    const res = await fetch(`${h.base}/api/uploads`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${h.adminToken}` },
+        body: png,
+    });
+    const stored = await res.json();
+    assert.equal(res.status, 201, JSON.stringify(stored));
+
+    const a = await h.connect(h.adminToken);
+    const b = await h.connect(kes.token);
+
+    // channel: picture with no words is a complete message
+    a.send('text-chat:send', {
+        channelId: room.id,
+        attachment: { id: stored.id, mime: stored.mime, bytes: stored.bytes, name: 'cat.png' },
+    });
+    await a.expect('text-chat:accepted');
+    const seen = await b.expect('text-chat:message');
+    assert.equal(seen.message.attachment.url, `/api/uploads/${stored.id}`, 'URL is derived, never trusted');
+    assert.equal(seen.message.attachment.name, 'cat.png');
+
+    // it survives into history
+    const page = await h.call('GET', `/api/chat/${room.id}/messages`, { token: kes.token });
+    assert.equal(page.body.messages.at(-1).attachment.id, stored.id);
+
+    // a forged shape is refused outright
+    a.send('text-chat:send', { channelId: room.id, attachment: { id: '../../etc/passwd', mime: 'image/png' } });
+    const refused = await a.expect('error');
+    assert.equal(refused.code, 'empty', 'a bogus attachment counts as nothing at all');
+
+    // DM: same contract
+    const thread = (await h.call('POST', '/api/dm/threads', {
+        token: h.adminToken, body: { userId: kes.user.id },
+    })).body.thread;
+    a.send('dm:send', {
+        threadId: thread.id,
+        attachment: { id: stored.id, mime: stored.mime, bytes: stored.bytes, name: 'cat.png' },
+    });
+    await a.expect('dm:accepted');
+    const dmSeen = await b.expect('dm:message');
+    assert.equal(dmSeen.message.attachment.url, `/api/uploads/${stored.id}`);
+    const dmPage = await h.call('GET', `/api/dm/threads/${thread.id}/messages`, { token: kes.token });
+    assert.equal(dmPage.body.messages.at(-1).attachment.id, stored.id);
+});
+
+test('link previews refuse the private network at every hop', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    for (const target of ['http://127.0.0.1/', 'http://192.168.0.1/admin', 'http://10.0.0.5/', 'http://169.254.169.254/latest']) {
+        const r = await h.call('GET', `/api/link-preview?url=${encodeURIComponent(target)}`, { token: h.adminToken });
+        assert.equal(r.status, 400, `${target} must be refused`);
+    }
+    const notUrl = await h.call('GET', '/api/link-preview?url=not-a-url', { token: h.adminToken });
+    assert.equal(notUrl.status, 400);
+    const ftp = await h.call('GET', `/api/link-preview?url=${encodeURIComponent('ftp://example.com/x')}`, { token: h.adminToken });
+    assert.equal(ftp.status, 400);
 });

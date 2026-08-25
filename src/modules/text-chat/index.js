@@ -16,6 +16,27 @@ const MAX_BODY = 4000;
 const PAGE_DEFAULT = 30;
 const PAGE_MAX = 100;
 
+
+/**
+ * The attachment a client may claim: an upload id it knows, plus a display name. The
+ * URL is DERIVED here — a client cannot point a message anywhere but /api/uploads —
+ * and the mime must be one the uploads module can actually have produced.
+ */
+function cleanAttachment(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id ?? '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) return null;
+    const mime = String(raw.mime ?? '');
+    if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) return null;
+    const bytes = Number(raw.bytes);
+    const name = String(raw.name ?? 'image').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80) || 'image';
+    return {
+        id, mime, name,
+        url: `/api/uploads/${id}`,
+        bytes: Number.isFinite(bytes) && bytes > 0 ? Math.min(bytes, 50_000_000) : 0,
+    };
+}
+
 export function register(ctx) {
     ctx.db.migrate();
 
@@ -34,8 +55,8 @@ export function register(ctx) {
     const db = ctx.db.handle;
 
     const insert = db.prepare(`
-        INSERT INTO chat_messages (id, channel_id, user_id, author_name, avatar, body, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO chat_messages (id, channel_id, user_id, author_name, avatar, body, created_at, attachment)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertMention = db.prepare(`
@@ -96,7 +117,7 @@ export function register(ctx) {
     // usually right and history that is always right.
     const page = db.prepare(`
         SELECT id, channel_id AS channelId, user_id AS userId, author_name AS authorName,
-               avatar, body, created_at AS createdAt, edited_at AS editedAt
+               avatar, body, created_at AS createdAt, attachment, edited_at AS editedAt
         FROM chat_messages
         WHERE channel_id = ?
           AND (created_at < ? OR (created_at = ? AND id < ?))
@@ -122,7 +143,9 @@ export function register(ctx) {
 
         const limit = ctx.settings.get('maxLength');
         const body = String(msg.body ?? '').trim();
-        if (!body) return fail(ws, 'empty', 'Nothing to send.');
+        const attachment = cleanAttachment(msg.attachment);
+        // A picture alone is a complete message; only nothing-at-all is nothing.
+        if (!body && !attachment) return fail(ws, 'empty', 'Nothing to send.');
         if (body.length > limit) {
             // Refusing beats truncating: silently cutting someone off mid-sentence and
             // sending it anyway is worse than telling them.
@@ -137,6 +160,7 @@ export function register(ctx) {
             avatar: peer.avatar ?? null,
             body,
             createdAt: Date.now(),
+            attachment,
         };
 
         // Who this message names, resolved NOW against the people who exist now. The
@@ -146,7 +170,8 @@ export function register(ctx) {
 
         const writeAll = db.transaction(() => {
             insert.run(record.id, record.channelId, record.userId,
-                record.authorName, record.avatar, record.body, record.createdAt);
+                record.authorName, record.avatar, record.body, record.createdAt,
+                attachment ? JSON.stringify(attachment) : null);
             for (const user of mentioned) {
                 insertMention.run(record.id, record.channelId, user.id, record.createdAt);
             }
@@ -232,7 +257,8 @@ export function register(ctx) {
         // message sharing the newest timestamp.
         const beforeId = query.beforeId ?? '￿';
 
-        const rows = page.all(params.channelId, before, before, beforeId, limit);
+        const rows = page.all(params.channelId, before, before, beforeId, limit)
+            .map((r) => ({ ...r, attachment: r.attachment ? JSON.parse(r.attachment) : null }));
         const oldest = rows.at(-1);
 
         json(200, {

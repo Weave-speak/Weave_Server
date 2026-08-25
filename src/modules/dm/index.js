@@ -17,6 +17,23 @@ import { HOOKS } from '../../core/hooks/index.js';
 const PAGE_DEFAULT = 50;
 const PAGE_MAX = 100;
 
+
+/** Same claim-shape as text-chat's: id + name in, server-derived URL out. */
+function cleanAttachment(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id ?? '');
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) return null;
+    const mime = String(raw.mime ?? '');
+    if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) return null;
+    const bytes = Number(raw.bytes);
+    const name = String(raw.name ?? 'image').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80) || 'image';
+    return {
+        id, mime, name,
+        url: `/api/uploads/${id}`,
+        bytes: Number.isFinite(bytes) && bytes > 0 ? Math.min(bytes, 50_000_000) : 0,
+    };
+}
+
 export function register(ctx) {
     ctx.db.migrate();
 
@@ -43,11 +60,11 @@ export function register(ctx) {
         'SELECT id, username, display_name AS displayName, avatar, is_disabled AS isDisabled FROM users WHERE id = ?');
 
     const insertMessage = db.prepare(`
-        INSERT INTO dm_messages (id, thread_id, author_id, author_name, body, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)`);
+        INSERT INTO dm_messages (id, thread_id, author_id, author_name, body, created_at, attachment)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`);
     const page = db.prepare(`
         SELECT id, thread_id AS threadId, author_id AS authorId, author_name AS authorName,
-               body, created_at AS createdAt
+               body, created_at AS createdAt, attachment
         FROM dm_messages
         WHERE thread_id = ?
           AND (created_at < ? OR (created_at = ? AND id < ?))
@@ -158,7 +175,9 @@ export function register(ctx) {
         const rows = page.all(thread.id, before, before, beforeId, limit);
         const oldest = rows.at(-1);
         json(200, {
-            messages: rows.reverse(),
+            messages: rows.reverse().map((r) => ({
+                ...r, attachment: r.attachment ? JSON.parse(r.attachment) : null,
+            })),
             nextBefore: rows.length === limit ? oldest.createdAt : null,
             nextBeforeId: rows.length === limit ? oldest.id : null,
         });
@@ -202,7 +221,8 @@ export function register(ctx) {
 
         const limit = ctx.settings.get('maxLength');
         const body = String(msg.body ?? '').trim();
-        if (!body) return fail(ws, 'empty', 'Nothing to send.');
+        const attachment = cleanAttachment(msg.attachment);
+        if (!body && !attachment) return fail(ws, 'empty', 'Nothing to send.');
         if (body.length > limit) {
             return fail(ws, 'too_long', `Messages are limited to ${limit} characters.`);
         }
@@ -214,10 +234,12 @@ export function register(ctx) {
             authorName: peer.displayName ?? peer.username,
             body,
             createdAt: Date.now(),
+            attachment,
         };
         const write = db.transaction(() => {
             insertMessage.run(record.id, record.threadId, record.authorId,
-                record.authorName, record.body, record.createdAt);
+                record.authorName, record.body, record.createdAt,
+                attachment ? JSON.stringify(attachment) : null);
             touchThread.run(record.createdAt, thread.id);
         });
         write();
