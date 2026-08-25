@@ -57,22 +57,22 @@ export function register(ctx) {
         SELECT body, author_id AS authorId, created_at AS createdAt FROM dm_messages
         WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`);
 
+    // Markers are the acked message's ROWID — see chat_reads for the whole argument.
     const upsertRead = db.prepare(`
-        INSERT INTO dm_reads (user_id, thread_id, last_created_at, last_id)
-        VALUES (@userId, @threadId, @createdAt, @id)
+        INSERT INTO dm_reads (user_id, thread_id, last_created_at, last_id, last_seq)
+        VALUES (@userId, @threadId, @createdAt, @id, @seq)
         ON CONFLICT (user_id, thread_id) DO UPDATE SET
-            last_created_at = excluded.last_created_at,
-            last_id = excluded.last_id
-        WHERE excluded.last_created_at > dm_reads.last_created_at
-           OR (excluded.last_created_at = dm_reads.last_created_at
-               AND excluded.last_id > dm_reads.last_id)`);
-    const readOf = db.prepare('SELECT last_created_at AS lastCreatedAt, last_id AS lastId FROM dm_reads WHERE user_id = ? AND thread_id = ?');
+            last_created_at = MAX(dm_reads.last_created_at, excluded.last_created_at),
+            last_id = CASE WHEN excluded.last_seq > dm_reads.last_seq THEN excluded.last_id ELSE dm_reads.last_id END,
+            last_seq = MAX(dm_reads.last_seq, excluded.last_seq)`);
+    const seqOf = db.prepare('SELECT rowid AS seq, thread_id AS threadId FROM dm_messages WHERE id = ?');
+    const readOf = db.prepare('SELECT last_created_at AS lastCreatedAt, last_id AS lastId, last_seq AS lastSeq FROM dm_reads WHERE user_id = ? AND thread_id = ?');
     const unreadIn = db.prepare(`
         SELECT COUNT(*) AS n FROM (
             SELECT 1 FROM dm_messages m
             WHERE m.thread_id = @threadId
               AND m.author_id != @userId
-              AND (m.created_at > @afterAt OR (m.created_at = @afterAt AND m.id > @afterId))
+              AND m.rowid > @afterSeq
             LIMIT 100
         )`);
 
@@ -106,8 +106,7 @@ export function register(ctx) {
             unread: unreadIn.get({
                 threadId: thread.id,
                 userId,
-                afterAt: mark?.lastCreatedAt ?? 0,
-                afterId: mark?.lastId ?? '',
+                afterSeq: mark?.lastSeq ?? 0,
             }).n,
         };
     };
@@ -175,6 +174,22 @@ export function register(ctx) {
             }
         }
     };
+
+    // Typing, DM edition: relayed only to the one person it could concern, throttled
+    // exactly like the channel version, stored nowhere. The receiver expires it.
+    const lastTyping = new Map();   // cid -> last relayed at
+    ctx.ws.on('typing', ({ ws, msg }) => {
+        const peer = ctx.peers.get(ws.cid);
+        if (!peer) return;
+        const thread = threadById.get(String(msg.threadId ?? ''));
+        if (!thread || !isParty(thread, peer.userId)) return;
+        const now = Date.now();
+        if (now - (lastTyping.get(ws.cid) ?? 0) < 4_000) return;
+        lastTyping.set(ws.cid, now);
+        for (const other of ctx.peers.forUser(otherOf(thread, peer.userId))) {
+            ctx.ws.send(other.ws, 'typing', { threadId: thread.id, username: peer.username });
+        }
+    });
 
     ctx.ws.on('send', ({ ws, msg, send, fail }) => {
         const peer = ctx.peers.get(ws.cid);
@@ -342,6 +357,8 @@ export function register(ctx) {
         const createdAt = Number(msg.createdAt);
         const id = String(msg.id ?? '');
         if (!Number.isFinite(createdAt) || !id) return;
-        upsertRead.run({ userId: peer.userId, threadId: thread.id, createdAt, id });
+        const seen = seqOf.get(id);
+        if (!seen || seen.threadId !== thread.id) return;
+        upsertRead.run({ userId: peer.userId, threadId: thread.id, createdAt, id, seq: seen.seq });
     });
 }

@@ -56,16 +56,18 @@ export function register(ctx) {
         return [...seen.values()];
     };
 
+    // The marker is the acked message's ROWID — insertion order, the order frames were
+    // delivered in. MAX() keeps it forward-only: a stale tab acking old history cannot
+    // resurrect a badge. created_at/id are still stored for the "jump to last read" UI.
     const upsertRead = db.prepare(`
-        INSERT INTO chat_reads (user_id, channel_id, last_created_at, last_id)
-        VALUES (@userId, @channelId, @createdAt, @id)
+        INSERT INTO chat_reads (user_id, channel_id, last_created_at, last_id, last_seq)
+        VALUES (@userId, @channelId, @createdAt, @id, @seq)
         ON CONFLICT (user_id, channel_id) DO UPDATE SET
-            last_created_at = excluded.last_created_at,
-            last_id = excluded.last_id
-        WHERE excluded.last_created_at > chat_reads.last_created_at
-           OR (excluded.last_created_at = chat_reads.last_created_at
-               AND excluded.last_id > chat_reads.last_id)
+            last_created_at = MAX(chat_reads.last_created_at, excluded.last_created_at),
+            last_id = CASE WHEN excluded.last_seq > chat_reads.last_seq THEN excluded.last_id ELSE chat_reads.last_id END,
+            last_seq = MAX(chat_reads.last_seq, excluded.last_seq)
     `);
+    const seqOf = db.prepare('SELECT rowid AS seq, channel_id AS channelId FROM chat_messages WHERE id = ?');
 
     // Unread and unseen-mention counts for every text-capable channel, one round trip.
     // COUNT is capped in SQL so a year of history in a never-opened channel costs a
@@ -73,17 +75,17 @@ export function register(ctx) {
     const unreadFor = db.prepare(`
         SELECT COUNT(*) AS n FROM (
             SELECT 1 FROM chat_messages m
-            WHERE m.channel_id = @channelId
-              AND (m.created_at > @afterAt OR (m.created_at = @afterAt AND m.id > @afterId))
+            WHERE m.channel_id = @channelId AND m.rowid > @afterSeq
             LIMIT 100
         )
     `);
     const mentionsFor = db.prepare(`
-        SELECT COUNT(*) AS n FROM chat_mentions
-        WHERE user_id = @userId AND channel_id = @channelId
-          AND created_at > @afterAt
+        SELECT COUNT(*) AS n FROM chat_mentions x
+        JOIN chat_messages m ON m.id = x.message_id
+        WHERE x.user_id = @userId AND x.channel_id = @channelId
+          AND m.rowid > @afterSeq
     `);
-    const readsOf = db.prepare('SELECT channel_id AS channelId, last_created_at AS lastCreatedAt, last_id AS lastId FROM chat_reads WHERE user_id = ?');
+    const readsOf = db.prepare('SELECT channel_id AS channelId, last_created_at AS lastCreatedAt, last_id AS lastId, last_seq AS lastSeq FROM chat_reads WHERE user_id = ?');
 
     // The cursor is (created_at, id), not created_at alone.
     //
@@ -174,9 +176,31 @@ export function register(ctx) {
         const createdAt = Number(msg.createdAt);
         const id = String(msg.id ?? '');
         if (!Number.isFinite(createdAt) || !id) return;
-        // Forward-only by the WHERE clause: a stale tab acking an old message cannot
-        // resurrect a badge someone already cleared.
-        upsertRead.run({ userId: peer.userId, channelId: channel.id, createdAt, id });
+        // The id names the message; ITS insertion order is the marker. An id the server
+        // has never seen marks nothing, exactly like before.
+        const seen = seqOf.get(id);
+        if (!seen || seen.channelId !== channel.id) return;
+        upsertRead.run({ userId: peer.userId, channelId: channel.id, createdAt, id, seq: seen.seq });
+    });
+
+    // ── typing ───────────────────────────────────────────────────────────────
+    // The shape every messenger converged on: throttled fire-and-forget pings, relayed
+    // and forgotten. Nothing is stored, nothing is acknowledged, and the RECEIVER owns
+    // expiry — Discord's window is ~10s, Telegram's 5; ours relays at most every 4s and
+    // clients let it lapse at 8. A lost ping costs one flicker, never a stuck banner.
+    const lastTyping = new Map();   // cid -> last relayed at
+    ctx.hooks.on(HOOKS.PEER_LEAVE, ({ peer }) => lastTyping.delete(peer?.cid));
+
+    ctx.ws.on('typing', ({ ws, msg, broadcast }) => {
+        const peer = ctx.peers.get(ws.cid);
+        if (!peer) return;
+        const channel = getChannel(db, msg.channelId);
+        if (!channel?.allowText || channel.private) return;
+        const now = Date.now();
+        if (now - (lastTyping.get(ws.cid) ?? 0) < 4_000) return;
+        lastTyping.set(ws.cid, now);
+        broadcast('typing', { channelId: channel.id, username: peer.username },
+            (sock) => sock.cid !== ws.cid);
     });
 
     ctx.http.route('GET', '/api/chat/reads', ({ session, json }) => {
@@ -185,10 +209,9 @@ export function register(ctx) {
             .filter((c) => c.allowText)
             .map((c) => {
                 const mark = markers.get(c.id) ?? null;
-                const afterAt = mark?.lastCreatedAt ?? 0;
-                const afterId = mark?.lastId ?? '';
-                const unread = unreadFor.get({ channelId: c.id, afterAt, afterId }).n;
-                const mentions = mentionsFor.get({ userId: session.userId, channelId: c.id, afterAt }).n;
+                const afterSeq = mark?.lastSeq ?? 0;
+                const unread = unreadFor.get({ channelId: c.id, afterSeq }).n;
+                const mentions = mentionsFor.get({ userId: session.userId, channelId: c.id, afterSeq }).n;
                 return {
                     channelId: c.id,
                     unread,

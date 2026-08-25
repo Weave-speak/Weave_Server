@@ -1,0 +1,11 @@
+{
+  "id": "reactions",
+  "name": "Reactions",
+  "version": "1.0.0",
+  "description": "Emoji reactions on channel messages. Plain unicode emoji only — lightweight by construction.",
+  "requires": ["text-chat"],
+  "defaultEnabled": true,
+  "features": [
+    "chat.reactions"
+  ]
+}

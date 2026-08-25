@@ -21,8 +21,10 @@ export class ChannelError extends Error {
 export const KINDS = Object.freeze(['voice', 'text', 'both', 'afk']);
 const NAME_MAX = 40;
 
+const TOPIC_MAX = 120;
+
 const COLUMNS = `
-    id, name, kind, position,
+    id, name, kind, position, topic,
     allow_voice AS allowVoice, allow_text AS allowText, allow_video AS allowVideo,
     is_default AS isDefault, created_at AS createdAt,
     private, created_by AS createdBy, last_occupied_at AS lastOccupiedAt, system
@@ -37,6 +39,14 @@ const toChannel = (row) => (row ? {
     private: row.private === 1,
     system: row.system === 1,
 } : null);
+
+function validateTopic(topic) {
+    const value = String(topic ?? '').trim();
+    if (value.length > TOPIC_MAX) {
+        throw new ChannelError(`A topic is ${TOPIC_MAX} characters or fewer.`, 'topic');
+    }
+    return value;
+}
 
 function validateName(name) {
     const value = String(name ?? '').trim();
@@ -71,11 +81,12 @@ export function ensureDefaults(db, log) {
 }
 
 export function createChannel(db, {
-    name, kind = 'both', position = null,
+    name, kind = 'both', position = null, topic = '',
     allowVoice = true, allowText = true, allowVideo = true, isDefault = false,
     private: isPrivate = false, createdBy = null, system = false,
 }) {
     const cleanName = validateName(name);
+    const cleanTopic = validateTopic(topic);
     if (!KINDS.includes(kind)) {
         throw new ChannelError(`Channel kind must be one of: ${KINDS.join(', ')}`, 'kind');
     }
@@ -92,10 +103,10 @@ export function createChannel(db, {
         if (isDefault) db.prepare('UPDATE channels SET is_default = 0').run();
 
         db.prepare(`
-            INSERT INTO channels (id, name, kind, position, allow_voice, allow_text, allow_video, is_default,
+            INSERT INTO channels (id, name, kind, position, topic, allow_voice, allow_text, allow_video, is_default,
                                   private, created_by, last_occupied_at, system)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(id, cleanName, kind, pos,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(id, cleanName, kind, pos, cleanTopic,
             allowVoice ? 1 : 0, text ? 1 : 0, allowVideo ? 1 : 0, isDefault ? 1 : 0,
             isPrivate ? 1 : 0, createdBy, isPrivate ? Date.now() : null, system ? 1 : 0);
 
@@ -176,6 +187,7 @@ export function updateChannel(db, id, changes) {
 
     const next = {
         name: changes.name !== undefined ? validateName(changes.name) : current.name,
+        topic: changes.topic !== undefined ? validateTopic(changes.topic) : current.topic,
         kind: changes.kind !== undefined ? changes.kind : current.kind,
         position: changes.position !== undefined ? Number(changes.position) : current.position,
         allowVoice: changes.allowVoice !== undefined ? !!changes.allowVoice : current.allowVoice,
@@ -191,9 +203,9 @@ export function updateChannel(db, id, changes) {
         if (next.isDefault) db.prepare('UPDATE channels SET is_default = 0').run();
         db.prepare(`
             UPDATE channels
-            SET name = ?, kind = ?, position = ?, allow_voice = ?, allow_text = ?, allow_video = ?, is_default = ?
+            SET name = ?, topic = ?, kind = ?, position = ?, allow_voice = ?, allow_text = ?, allow_video = ?, is_default = ?
             WHERE id = ?
-        `).run(next.name, next.kind, next.position,
+        `).run(next.name, next.topic, next.kind, next.position,
             next.allowVoice ? 1 : 0, next.allowText ? 1 : 0, next.allowVideo ? 1 : 0,
             next.isDefault ? 1 : 0, id);
     });

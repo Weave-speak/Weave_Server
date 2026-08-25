@@ -345,8 +345,13 @@ test('disabling a module removes its routes and message types, leaving the rest'
     const before = await h.call('GET', '/api/server-info');
     assert.ok(before.body.features.includes('module.text-chat'));
 
+    // reactions depends on text-chat, and the loader refuses to pull a floor out from
+    // under a standing module — so the dependent goes first. That refusal has its own
+    // test; this one is about the surface actually vanishing.
+    const dep = await h.call('POST', '/api/admin/modules/reactions/disable', { token: h.token });
+    assert.equal(dep.status, 200, JSON.stringify(dep.body));
     const off = await h.call('POST', '/api/admin/modules/text-chat/disable', { token: h.token });
-    assert.equal(off.status, 200);
+    assert.equal(off.status, 200, JSON.stringify(off.body));
 
     // Its route is gone...
     const chan = h.channels[0].id;
