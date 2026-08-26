@@ -21,6 +21,7 @@ import { AdminRegistry } from './core/admin/registry.js';
 import { ModuleHost } from './core/modules/loader.js';
 import { createAuth, purgeExpiredSessions } from './core/auth/index.js';
 import { SetupState } from './core/setup/index.js';
+import { watchAnnouncedAddress } from './core/sfu/address-watch.js';
 import { ensureDefaults, listChannels, visibleChannels } from './core/channels/index.js';
 import { registerCoreRoutes } from './core/http/routes/index.js';
 import { createSfu } from './core/sfu/index.js';
@@ -195,6 +196,15 @@ export async function start(env = process.env) {
         quiet: config.logLevel === 'silent',
     });
 
+    // The announced address is a dynamic-DNS name on a home line: when the ISP moves the
+    // address underneath it, every connected client is left sending media to somebody
+    // else's IP. Nothing about that is visible to them, so the server watches the name
+    // and asks everyone to rebuild the moment it moves.
+    const stopAddressWatch = watchAnnouncedAddress({
+        announcedAddress: config.announcedAddress,
+        log, peers, sfu, ws: wsFacade,
+    });
+
     hooks.emit(HOOKS.SERVER_READY, { config, version: pkg.version });
 
     // ── Shutdown ─────────────────────────────────────────────────────────────
@@ -205,6 +215,7 @@ export async function start(env = process.env) {
         log.info({ evt: 'server.stopping', signal }, `Shutting down (${signal})`);
 
         hooks.emit(HOOKS.SERVER_STOPPING, {});
+        stopAddressWatch();
         await ws.close();
         await sfu.close();
         await new Promise((resolve) => server.close(resolve));
