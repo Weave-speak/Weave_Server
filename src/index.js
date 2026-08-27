@@ -22,6 +22,7 @@ import { ModuleHost } from './core/modules/loader.js';
 import { createAuth, purgeExpiredSessions } from './core/auth/index.js';
 import { SetupState } from './core/setup/index.js';
 import { watchAnnouncedAddress } from './core/sfu/address-watch.js';
+import { watchRoomMedia } from './core/sfu/media-reconcile.js';
 import { ensureDefaults, listChannels, visibleChannels } from './core/channels/index.js';
 import { registerCoreRoutes } from './core/http/routes/index.js';
 import { createSfu } from './core/sfu/index.js';
@@ -205,6 +206,12 @@ export async function start(env = process.env) {
         log, peers, sfu, ws: wsFacade,
     });
 
+    // "Everyone in a voice channel hears everyone else" is an invariant nothing was
+    // checking. Consuming is driven by events, and a client that misses one does not know
+    // it missed anything — it never asks again and nothing errors. The server knows both
+    // halves, so it reconciles them.
+    const stopMediaReconcile = watchRoomMedia({ peers, ws: wsFacade, log });
+
     hooks.emit(HOOKS.SERVER_READY, { config, version: pkg.version });
 
     // ── Shutdown ─────────────────────────────────────────────────────────────
@@ -216,6 +223,7 @@ export async function start(env = process.env) {
 
         hooks.emit(HOOKS.SERVER_STOPPING, {});
         stopAddressWatch();
+        stopMediaReconcile();
         await ws.close();
         await sfu.close();
         await new Promise((resolve) => server.close(resolve));

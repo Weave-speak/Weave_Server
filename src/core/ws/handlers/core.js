@@ -384,6 +384,16 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
             send('consumerClosed', { consumerId: consumer.id, cid: target.cid, slot: msg.slot });
         });
 
+        // Logged because its ABSENCE is the failure: producing was always visible in the
+        // journal while consuming never was, so "everyone is producing, nobody hears
+        // anything" looked identical to a perfectly healthy room.
+        ws.log.info({
+            evt: 'consume.started',
+            listener: peer.username,
+            speaker: target.username,
+            slot: msg.slot,
+        }, `${peer.username} is now receiving ${target.username}'s ${msg.slot}`);
+
         send('consumed', {
             consumerId: consumer.id,
             producerId: producer.id,
