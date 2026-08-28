@@ -105,6 +105,10 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
                 announcedSource: sfu.announcedSource,
                 ports: sfu.ports,
                 workers: sfu.workerCount,
+                // Worst consumer score seen since boot, and how many times a receiver
+                // slid into losing audible packets. Before this the server had no quality
+                // signal at all, so a regression could only be found by being told.
+                ...sfu.quality,
             },
             connections: {
                 peers: peers.count,

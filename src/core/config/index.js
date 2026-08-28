@@ -102,6 +102,25 @@ export const SCHEMA = [
         check: (v) => (v > 0 && v <= 32) || 'must be between 1 and 32',
     },
     {
+        key: 'WEAVE_SFU_LOG_LEVEL', name: 'sfuLogLevel', parse: String, default: 'warn',
+        doc: 'Log level for the mediasoup workers, separately from the rest of the server. The media subsystem is far chattier; raise this to debug only while diagnosing a quality problem, and the bandwidth-estimate and stream-score lines become visible.',
+        check: (v) => ['debug', 'warn', 'error', 'none'].includes(v) || 'must be one of debug, warn, error, none',
+    },
+    {
+        key: 'WEAVE_OPUS_BITRATE', name: 'opusBitrate', parse: asInt, default: 64000,
+        doc: 'Target bitrate for each voice stream, in bits per second. 64000 matches the Discord default channel; 96000-128000 is audibly better on a good uplink. It is declared in the router codec parameters, so it reaches every client encoder — including ones too old to ask for it.',
+        check: (v) => (v >= 8000 && v <= 512000) || 'must be between 8000 and 512000',
+    },
+    {
+        key: 'WEAVE_MAX_INCOMING_BITRATE', name: 'maxIncomingBitrate', parse: asInt, default: 8000000,
+        doc: 'Ceiling on what ONE participant may send this server, in bits per second, across all their streams at once. Lower it if your upload is thin: a screen share capped below its preset is better than one that saturates the link and takes the voice with it.',
+        check: (v) => (v >= 100000 && v <= 100000000) || 'must be between 100000 and 100000000',
+    },
+    {
+        key: 'WEAVE_MAX_OUTGOING_BITRATE', name: 'maxOutgoingBitrate', parse: asInt, default: null,
+        doc: 'Optional ceiling on what this server sends to any one participant, in bits per second. Unset means let congestion control decide per path, which is right unless your total upload — rather than any single path — is the constraint.',
+    },
+    {
         key: 'WEAVE_DISABLED_MODULES', name: 'disabledModules', parse: asList, default: [],
         doc: 'Module ids to leave unloaded at boot, comma separated. The admin panel is the normal way to do this.',
     },

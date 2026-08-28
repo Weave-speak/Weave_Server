@@ -415,3 +415,41 @@ test('a flood is cut off rather than served', async (t) => {
     const err = await c.expect((m) => m.type === 'error' && m.code === 'rate_limited', 8000);
     assert.equal(err.code, 'rate_limited');
 });
+
+test('ICE can be restarted in place, without recreating the transport', async (t) => {
+    // The cheap rung of the recovery ladder. Users were silently losing one direction of
+    // audio — send and receive are separate transports — and the only remedy the client
+    // had was a full teardown and rebuild: a new DTLS handshake, new consumers, and a
+    // permission-shaped pause. Restarting ICE repairs the path while every producer and
+    // consumer on it stays exactly where it is.
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const c = await h.connect();
+    await join(c, h.adminToken);
+    c.send('createTransport', { direction: 'send' });
+    const created = await c.expect('transportCreated');
+
+    c.send('restartIce', { direction: 'send' });
+    const restarted = await c.expect('iceRestarted');
+
+    assert.equal(restarted.direction, 'send');
+    assert.equal(restarted.id, created.id, 'the SAME transport — that is the whole point');
+    assert.ok(restarted.iceParameters?.usernameFragment, 'fresh credentials to signal onward');
+    assert.notEqual(
+        restarted.iceParameters.usernameFragment,
+        created.iceParameters.usernameFragment,
+        'credentials that did not change would restart nothing',
+    );
+});
+
+test('restarting ICE on a transport that does not exist is an error, not a crash', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const c = await h.connect();
+    await join(c, h.adminToken);
+    c.send('restartIce', { direction: 'recv' });
+
+    assert.equal((await c.expect('error')).code, 'no_transport');
+});

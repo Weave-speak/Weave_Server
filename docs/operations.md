@@ -38,6 +38,28 @@ Almost always the announced address or the port forward.
 2. Is `WEAVE_MEDIA_PORT` forwarded on **both UDP and TCP**?
 3. Is it a 1:1 forward, not a remapping one? Doctor reports this.
 
+## One person drops in and out, or loses audio one way
+
+Different symptom, different cause. If a call *connects* and then one direction goes quiet
+for one person, the media path died without either end declaring it — usually a router
+changing its mind about their address, or a move between networks.
+
+The client now notices this itself: it watches both the connection state and whether
+packets are actually arriving, restarts ICE in place, and only rebuilds the whole media
+path if that fails. Look for these in the journal:
+
+```bash
+ssh codeine@192.168.0.50 'journalctl -u weave-dev -n 200 --no-pager | grep -E "transport.ice|transport.dtls|consumer.poor"'
+```
+
+- `transport.ice … disconnected` — the server stopped receiving ICE consent from that
+  peer. Its own patience is `iceConsentTimeout`, 30 seconds, which is the outer bound on
+  how long a dead path can go unnoticed server-side.
+- `consumer.poor` — the path is alive but lossy. Names both ends, so it says who to ask.
+
+If it is happening to everyone at once rather than one person, suspect the announced
+address instead and read the section above.
+
 ## Locked out
 
 Being able to read the data directory is the authorisation, so no password is needed:

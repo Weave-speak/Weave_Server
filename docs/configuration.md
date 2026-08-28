@@ -72,6 +72,58 @@ plain transport; under `SO_REUSEPORT` the kernel hashes incoming packets to whic
 socket it likes, which for ICE means traffic can arrive at a worker that does not own the
 transport. Raise the worker count only when one core is genuinely the bottleneck.
 
+## Audio and video quality
+
+### `WEAVE_OPUS_BITRATE`
+
+Defaults to `64000` — what a default Discord voice channel uses. `96000` to `128000` is
+audibly better and worth it on any decent uplink.
+
+This is the single highest-leverage setting on the server, and the reason is not obvious:
+mediasoup-client builds the answer that configures a browser's **encoder** from the
+parameters the *router* publishes, not from anything the client sends. So this figure
+reaches every client, including ones too old to know the setting exists. A client that
+does send its own preference overrides it per stream, which is how a screen share's audio
+gets 128 kb/s while voice stays at 64.
+
+With nothing declared at all, browsers fall back to roughly 32 kb/s — the point where Opus
+starts discarding the top octave of speech. That is most of what "muffled" means.
+
+### `WEAVE_MAX_INCOMING_BITRATE`
+
+Defaults to `8000000`: the ceiling on what **one** participant may send this server across
+all their streams at once — microphone, screen share, that share's audio, and a webcam.
+
+Lower it if your upload is thin. A screen share capped below its preset is better than one
+that saturates the link and takes everybody's voice down with it. The server communicates
+the limit through congestion control rather than trusting clients to respect it.
+
+### `WEAVE_MAX_OUTGOING_BITRATE`
+
+Unset by default, which lets congestion control decide per path — right, unless your
+constraint is total upload rather than any single viewer.
+
+### `WEAVE_SFU_LOG_LEVEL`
+
+Defaults to `warn`, separate from `WEAVE_LOG_LEVEL` because the media workers are far
+chattier than the rest of the server. Set it to `debug` while diagnosing a quality
+complaint and the bandwidth estimates and per-stream scores become visible.
+
+### Socket buffers
+
+The media sockets ask the kernel for 4 MB of send and receive buffer. Linux grants about
+208 KB by default and **silently clamps** the request, so on a busy server raise the
+ceiling to match:
+
+```bash
+sudo sysctl -w net.core.rmem_max=4194304
+sudo sysctl -w net.core.wmem_max=4194304
+```
+
+Without it, a scheduling hiccup while forwarding a large share overruns the socket, and
+the resulting loss looks exactly like network loss — except no router and no client can
+see it.
+
 ## Storage
 
 `WEAVE_DATA_DIR` holds the database, uploads and backups. Back up this directory.

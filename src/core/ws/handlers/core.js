@@ -212,7 +212,7 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
             peer.transports.delete(direction);
         }
 
-        const transport = await sfu.createTransport(peer.channelId);
+        const transport = await sfu.createTransport(peer.channelId, { direction });
         peer.transports.set(direction, transport);
 
         // The slot frees itself the moment the transport dies, whoever closed it and for
@@ -222,7 +222,15 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         });
 
         transport.on('dtlsstatechange', (state) => {
-            if (state === 'closed') transport.close();
+            // 'failed' as well as 'closed'. Only 'closed' used to be handled, so a DTLS
+            // handshake that failed mid-call left an OPEN transport sitting in the peer's
+            // slot: liveTransport() handed it back as usable, produce and consume
+            // succeeded against it, and the RTP went nowhere. Closing it frees the slot
+            // and lets the client rebuild, which is the whole point of noticing.
+            if (state === 'failed' || state === 'closed') {
+                ws.log.warn({ evt: 'transport.dtls', direction, state }, `DTLS ${state} on ${direction}`);
+                transport.close();
+            }
         });
         // ICE failure is how a network path dies mid-call. Surfacing it lets the client
         // rebuild rather than sitting in a call that is silently already over.
@@ -251,6 +259,40 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         send('transportConnected', { direction: msg.direction });
     });
 
+    /**
+     * Restart ICE on an existing transport, keeping everything that rides on it.
+     *
+     * The cheap rung of the client's recovery ladder. A transport whose path has died —
+     * a NAT rebinding moved the client's UDP mapping, a laptop hopped from wifi to LTE —
+     * used to be repairable only by tearing the whole thing down and building another:
+     * a fresh DTLS handshake, every consumer recreated, and a second or two of silence.
+     * New ICE credentials fix the path in place instead, with every producer and consumer
+     * on it untouched.
+     *
+     * mediasoup's docs say an application SHOULD close a transport whose ICE state has
+     * gone 'disconnected', because a consent-timeout is not recoverable. That advice is
+     * for an application with nowhere else to go. restartIce() exists precisely to put
+     * ICE back to 'new', so we try it first and close second — the docs' advice is the
+     * client's next rung, not its first.
+     */
+    registry.register('core', 'restartIce', async ({ ws, msg, send, fail }) => {
+        const peer = peers.get(ws.cid);
+        const direction = msg.direction;
+        if (direction !== 'send' && direction !== 'recv') {
+            return fail(ws, 'bad_direction', 'Transport direction must be "send" or "recv".');
+        }
+
+        const transport = liveTransport(peer, direction);
+        if (!transport) return fail(ws, 'no_transport', 'That transport does not exist.');
+
+        const iceParameters = await transport.restartIce();
+        ws.log.info({ evt: 'transport.ice_restarted', direction }, `ICE restarted on ${direction}`);
+
+        // The id is echoed so the client can prove the transport it holds is the one that
+        // was restarted, rather than assuming its own bookkeeping is still in step.
+        send('iceRestarted', { direction, id: transport.id, iceParameters });
+    });
+
     // ── producing ────────────────────────────────────────────────────────────
     registry.register('core', 'produce', async ({ ws, msg, send, fail }) => {
         const peer = peers.get(ws.cid);
@@ -266,12 +308,28 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         // Capability is a property of the channel, checked the same way for every
         // channel — not a special case keyed off a channel's name.
         const isVoice = slot === SLOTS.AUDIO;
-        const isVideo = slot === SLOTS.SCREEN || slot === SLOTS.WEBCAM;
+        // SCREEN_AUDIO belongs to the screen share, not to voice. It used to be in neither
+        // list, so it passed BOTH gates — a channel with voice switched off would still
+        // carry a peer's system audio. Following allowVideo rather than allowVoice is
+        // deliberate: the seeded "Away" room keeps video enabled precisely so a running
+        // share is not killed by going idle, and the share's audio must survive with it.
+        const isVideo = slot === SLOTS.SCREEN || slot === SLOTS.WEBCAM || slot === SLOTS.SCREEN_AUDIO;
         if (isVoice && !channel.allowVoice) {
             return fail(ws, 'voice_not_allowed', `Voice is not enabled in ${channel.name}.`);
         }
         if (isVideo && !channel.allowVideo) {
             return fail(ws, 'video_not_allowed', `Video is not enabled in ${channel.name}.`);
+        }
+
+        // Checked BEFORE the replace below. mediasoup would reject these anyway, but by
+        // then the replace has already closed a working producer — so a malformed frame
+        // cost the sender their live stream instead of costing them an error.
+        if (msg.kind !== 'audio' && msg.kind !== 'video') {
+            return fail(ws, 'bad_kind', 'kind must be "audio" or "video".');
+        }
+        if (!msg.rtpParameters || typeof msg.rtpParameters !== 'object'
+            || !Array.isArray(msg.rtpParameters.codecs) || msg.rtpParameters.codecs.length === 0) {
+            return fail(ws, 'bad_rtp_parameters', 'rtpParameters must carry at least one codec.');
         }
 
         const transport = liveTransport(peer, 'send');
@@ -294,7 +352,15 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         });
 
         peer.producers.set(slot, producer);
-        producer.on('transportclose', () => peer.producers.delete(slot));
+        producer.on('transportclose', () => {
+            peer.producers.delete(slot);
+            // Announced, not just forgotten. A transport dying used to remove the producer
+            // silently, so every other client's roster went on listing a stream that no
+            // longer existed — and the reconciler, seeing no producer, skipped the peer
+            // entirely rather than reporting them. Whoever was listening deserves to know.
+            toChannel(peer.channelId, 'producer_closed',
+                { cid: peer.cid, slot, producerId: producer.id }, peer.cid);
+        });
         await sfu.observeAudio(peer.channelId, producer);
 
         ws.log.info({ evt: 'producer.new', slot, kind: producer.kind },
@@ -378,10 +444,24 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         });
 
         peer.consumers.set(consumer.id, consumer);
-        consumer.on('transportclose', () => peer.consumers.delete(consumer.id));
+        consumer.on('transportclose', () => {
+            peer.consumers.delete(consumer.id);
+            // Told, not just dropped. Without this the client keeps the consumer in its
+            // own map, and consume()'s duplicate guard then refuses to rebuild it — so the
+            // server's own reconciler could re-announce the producer for ever and the
+            // listener stayed permanently deaf to that one person, with no error anywhere.
+            send('consumerClosed', { consumerId: consumer.id, cid: target.cid, slot: msg.slot });
+        });
         consumer.on('producerclose', () => {
             peer.consumers.delete(consumer.id);
             send('consumerClosed', { consumerId: consumer.id, cid: target.cid, slot: msg.slot });
+        });
+
+        // Scores are reported against NAMES, because "consumer 4f2a scored 3" is a number
+        // nobody can act on, and "ada is receiving grace badly" is a thing to go and look
+        // at. This is the only place that knows both ends.
+        sfu.observeQuality(consumer, {
+            listener: peer.username, speaker: target.username, slot: msg.slot,
         });
 
         // Logged because its ABSENCE is the failure: producing was always visible in the

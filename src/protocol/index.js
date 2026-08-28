@@ -33,6 +33,10 @@ export const CORE_FEATURES = Object.freeze([
     'channels.dynamic',
     'media.sfu',
     'media.tcp-fallback',
+    // Advertised so a client knows it may try the cheap repair before the expensive one.
+    // Against a server without it, the client skips straight to rebuilding the transport,
+    // which is exactly what every client did before this existed.
+    'media.ice-restart',
 ]);
 
 export class ProtocolMismatchError extends Error {
