@@ -228,7 +228,12 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
             // succeeded against it, and the RTP went nowhere. Closing it frees the slot
             // and lets the client rebuild, which is the whole point of noticing.
             if (state === 'failed' || state === 'closed') {
-                ws.log.warn({ evt: 'transport.dtls', direction, state }, `DTLS ${state} on ${direction}`);
+                // 'closed' is what an ordinary goodbye looks like — every peer who leaves
+                // produces one — so it is logged at info. Only 'failed' is a fault worth
+                // raising a voice about. Warning on both buried the real signal under the
+                // normal one, which is the exact thing this telemetry exists to avoid.
+                const say = state === 'failed' ? ws.log.warn : ws.log.info;
+                say.call(ws.log, { evt: 'transport.dtls', direction, state }, `DTLS ${state} on ${direction}`);
                 transport.close();
             }
         });
