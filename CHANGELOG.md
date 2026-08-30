@@ -7,6 +7,23 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.18] - 2026-08-30
+
+### Changed
+- The server no longer tells your browser how to encode your voice. 0.1.17 declared a
+  bitrate, a playback rate and a silence-suppression setting, and those declarations
+  configure the encoder in every connected client — including ones that never asked. Four
+  client releases in a row tried to improve voice quality and each made something worse,
+  so this goes back to what shipped before any of it: the server declares error correction
+  and nothing else, and leaves Opus to make its own decisions about bandwidth when a
+  connection tightens.
+
+- Raising the voice bitrate is still available and still worth having — without it browsers
+  settle around 32 kb/s, where speech starts losing its top octave. It is now `WEAVE_OPUS_BITRATE`,
+  unset by default. Set it, restart, and listen; unset it again if it sounds wrong. It takes
+  effect for every client without anybody updating anything, because the router's codec
+  parameters are what configure a browser's encoder.
+
 ## [0.1.17] - 2026-08-28
 
 ### Fixed

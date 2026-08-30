@@ -107,9 +107,9 @@ export const SCHEMA = [
         check: (v) => ['debug', 'warn', 'error', 'none'].includes(v) || 'must be one of debug, warn, error, none',
     },
     {
-        key: 'WEAVE_OPUS_BITRATE', name: 'opusBitrate', parse: asInt, default: 64000,
-        doc: 'Target bitrate for each voice stream, in bits per second. 64000 matches the Discord default channel; 96000-128000 is audibly better on a good uplink. It is declared in the router codec parameters, so it reaches every client encoder — including ones too old to ask for it.',
-        check: (v) => (v >= 8000 && v <= 512000) || 'must be between 8000 and 512000',
+        key: 'WEAVE_OPUS_BITRATE', name: 'opusBitrate', parse: asInt, default: null,
+        doc: 'Target bitrate for each voice stream, in bits per second. UNSET by default, which lets the browser choose — around 32000 mono. Setting 64000 matches the Discord default channel and is audibly clearer; 96000-128000 is better again on a good uplink. It is declared in the router codec parameters, so it reaches every client encoder including ones too old to ask. Change it, restart, and listen: it needs no rebuild and no client update.',
+        check: (v) => v === null || (v >= 8000 && v <= 512000) || 'must be between 8000 and 512000',
     },
     {
         key: 'WEAVE_MAX_INCOMING_BITRATE', name: 'maxIncomingBitrate', parse: asInt, default: 8000000,

@@ -43,7 +43,7 @@ import { watchQuality } from './quality.js';
  * that are too old to ask for it. A client that DOES send codecOptions overrides these
  * per producer, so this is the floor, not the ceiling.
  */
-export function mediaCodecs({ opusBitrate = 64_000 } = {}) {
+export function mediaCodecs({ opusBitrate = null } = {}) {
     return [
         {
             kind: 'audio',
@@ -52,35 +52,26 @@ export function mediaCodecs({ opusBitrate = 64_000 } = {}) {
             channels: 2,
             parameters: {
                 // In-band FEC: a lost packet reconstructed from the next one matters far
-                // more to a conversation than bitrate does.
+                // more to a conversation than bitrate does, and it costs no round trip.
                 useinbandfec: 1,
                 minptime: 10,
-                // 64 kb/s is Discord's default voice channel. Below roughly 48k, Opus
-                // starts trading away the top octave of speech — most of what people mean
-                // when they say a call sounds muffled. Without this declared at all,
-                // Chromium falls back to about 32 kb/s mono.
-                maxaveragebitrate: opusBitrate,
-                // Fullband, stated rather than assumed: Chromium already defaults here,
-                // but a handler that did not would silently band-limit to 24 kHz.
-                maxplaybackrate: 48000,
-                // DTX OFF as the default posture. It saves uplink we are not short of, and
-                // it stacks badly with the client's own noise gate — the gate already
-                // emits digital silence, DTX then stops sending entirely, and the first
-                // syllable after a pause lands before the decoder has re-primed. It also
-                // blinds the AudioLevelObserver through the gap, so the speaking ring
-                // lags. A producer that genuinely wants it still sets opusDtx and wins.
-                usedtx: 0,
-                // NOT declared here, deliberately:
-                //   stereo -- would apply to the MICROPHONE too and double its bitrate to
-                //             encode a phase difference nobody wants in a voice mix.
-                //             Stereo is per-producer, which is how a screen share gets it.
-                //   ptime  -- 20 ms is Chromium's default and Discord's. 10 ms would halve
-                //             latency for about +16 kb/s of header overhead and double the
-                //             packet rate through the Pi. Not worth it.
+                // The bitrate, ONLY if an operator asked for one. Default is unset, which
+                // is what shipped for every version people described as sounding fine.
                 //
-                // Opus fmtp is never matched on — mediasoup's ortc.matchCodecs special-
-                // cases only multiopus, H264 and VP9 — so nothing here can fail
-                // negotiation with any client.
+                // It is worth having -- without it Chromium settles around 32 kb/s mono,
+                // where speech starts losing its top octave -- but four releases in a row
+                // tried to improve this audio path by reasoning and each made something
+                // worse. So it ships OFF and becomes a thing somebody turns on and
+                // listens to: WEAVE_OPUS_BITRATE=64000 and a restart, no rebuild, and
+                // trivially reversible if it sounds wrong.
+                //
+                // NOT declared alongside it, deliberately:
+                //   maxplaybackrate -- pinning fullband stops Opus narrowing its own
+                //                      bandwidth when the link tightens, which is a thing
+                //                      it is good at and we should not take away.
+                //   usedtx          -- let the client decide. Forcing it off here changed
+                //                      behaviour for clients that never asked.
+                ...(opusBitrate ? { maxaveragebitrate: opusBitrate } : {}),
             },
         },
         {

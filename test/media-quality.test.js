@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
 import { freePort, startWithRetry } from './helpers.js';
+import { mediaCodecs } from '../src/core/sfu/index.js';
 
 function client(url) {
     const ws = new WebSocket(url);
@@ -126,29 +127,28 @@ async function launch(extraEnv = {}) {
 const opusOf = (caps) => caps.codecs.find((c) => c.mimeType.toLowerCase() === 'audio/opus');
 const videoOf = (caps) => caps.codecs.filter((c) => c.kind === 'video' && !/rtx/i.test(c.mimeType));
 
-test('the router tells every client what bitrate to encode speech at', async (t) => {
-    // Without maxaveragebitrate, Chromium picks roughly 32 kb/s mono — about a third of
-    // Discord's default channel, and most of what "muffled" meant. Declaring it here
-    // rather than in the client is deliberate: it reaches clients too old to ask.
-    const h = await launch();
-    t.after(h.cleanup);
-
-    const opus = opusOf(await h.caps());
-    assert.equal(opus.parameters.maxaveragebitrate, 64_000);
+test('the router leaves the voice encoder alone unless asked', () => {
+    // Deliberately minimal, and the result of four releases that each tried to improve
+    // this path by reasoning and each made something worse. FEC costs no round trip and
+    // stays; everything else is the browser's choice again, which is what shipped for
+    // every version people described as sounding fine.
+    const opus = mediaCodecs().find((c) => c.mimeType === 'audio/opus');
     assert.equal(opus.parameters.useinbandfec, 1, 'a packet rebuilt from the next one');
-    assert.equal(opus.parameters.maxplaybackrate, 48_000, 'fullband, stated not assumed');
-    assert.equal(opus.parameters.usedtx, 0, 'silence suppression clips the first syllable back');
+    assert.equal(opus.parameters.maxaveragebitrate, undefined, 'unset unless an operator asks');
+    assert.equal(opus.parameters.maxplaybackrate, undefined, 'let Opus narrow its own bandwidth');
+    assert.equal(opus.parameters.usedtx, undefined, 'let the client decide');
     assert.equal(opus.channels, 2, 'stereo stays available for a screen share to ask for');
 });
 
-test('the speech bitrate is what the operator set it to', async (t) => {
-    // The knob a self-hoster on a fat uplink actually wants, and the proof that the
-    // mechanism above is wired to config rather than hardcoded twice.
-    const h = await launch({ WEAVE_OPUS_BITRATE: '96000' });
-    t.after(h.cleanup);
-
-    assert.equal(opusOf(await h.caps()).parameters.maxaveragebitrate, 96_000);
+test('setting a bitrate is one environment variable, and reaches every client', () => {
+    // The A/B test an operator can actually run: change it, restart, listen. No rebuild,
+    // no client release, and it reaches clients too old to ask for it because the router
+    // parameters are what configure a browser's encoder.
+    const opus = mediaCodecs({ opusBitrate: 96_000 }).find((c) => c.mimeType === 'audio/opus');
+    assert.equal(opus.parameters.maxaveragebitrate, 96_000);
 });
+
+
 
 test('the advertised H264 level covers the resolutions the client offers', async (t) => {
     // '42e01f' is Constrained Baseline LEVEL 3.1, which caps at 3600 macroblocks — exactly
