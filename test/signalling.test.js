@@ -453,3 +453,37 @@ test('restarting ICE on a transport that does not exist is an error, not a crash
 
     assert.equal((await c.expect('error')).code, 'no_transport');
 });
+
+test('the heartbeat carries how long that machine has been untouched', async (t) => {
+    const h = await launch();
+    t.after(() => h.cleanup());
+
+    const c = await h.connect();
+    // join() consumes the hello itself.
+    const joined = await join(c, h.adminToken, h.channels[0].id);
+    const peer = () => h.app.peers.get(joined.self.cid);
+
+    // A browser sends no idleMs at all, and the server must record nothing rather than
+    // reading the absence as zero — which would claim permanent activity for every web
+    // client and quietly switch the away feature off for them.
+    c.send('ping', { t: Date.now() });
+    await c.expect('pong');
+    assert.equal(peer().idleMs, null, 'silence is not a claim of activity');
+
+    // The desktop shell reports it, and the server keeps the moment it landed alongside.
+    // Without the timestamp the figure is unusable: it only describes the past.
+    c.send('ping', { t: Date.now(), idleMs: 42_000 });
+    await c.expect('pong');
+    assert.equal(peer().idleMs, 42_000);
+    assert.ok(peer().idleReportedAt > 0, 'a figure is only meaningful with a time attached');
+
+    // This is the one signal a client supplies about ITSELF, so nonsense must not reach
+    // the roster. The last good value stands rather than being overwritten with rubbish.
+    const before = peer().idleReportedAt;
+    for (const bad of ['soon', -1, null, {}]) {
+        c.send('ping', { t: Date.now(), idleMs: bad });
+        await c.expect('pong');
+    }
+    assert.equal(peer().idleMs, 42_000, 'the last good value stands');
+    assert.equal(peer().idleReportedAt, before);
+});

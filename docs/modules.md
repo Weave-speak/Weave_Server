@@ -97,7 +97,7 @@ start if one changes underneath it. Add a new migration instead.
 |---|---|---|
 | `text-chat` | on | Messages, history with a cursor, retention |
 | `uploads` | on | Image attachments, type decided by magic bytes |
-| `afk` | on | Moves idle people to an away channel |
+| `afk` | on | Moves idle people to an away channel. Uses keyboard and mouse idleness where the desktop client can report it, microphone silence otherwise |
 | `slash-commands` | on | `/roll`, `/flip` — their own message type, so they work without chat |
 | `personas` | **off** | Join and leave sounds. Ships with an empty library |
 | `dev-smoke` | **off** | A page that proves audio flows. For verifying a deployment |

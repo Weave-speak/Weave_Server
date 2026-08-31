@@ -1,26 +1,45 @@
-// Automatic move to an away channel after a stretch of silence.
+// Automatic move to an away channel after a stretch of inactivity.
 //
-// The signal is server-measured. mediasoup's AudioLevelObserver reads real per-packet
-// audio levels off the RTP stream, so nothing here depends on a client reporting
-// honestly about itself, and muting needs no special case — muting genuinely pauses the
-// producer, no RTP flows, and that reads as silence exactly as it should.
+// Two signals, and the more truthful one wins.
 //
-// Two exemptions matter more than the timer does:
+//   OS IDLE TIME, when the client can see it. The desktop shell reads seconds since the
+//   last keyboard or mouse input anywhere on that machine and reports it on the heartbeat.
+//   This is what the module always wanted: it counts input to EVERY application, so
+//   somebody writing code in another window is at their desk.
+//
+//   MICROPHONE SILENCE, otherwise. mediasoup's AudioLevelObserver reads real per-packet
+//   levels off the RTP stream, so it depends on no client being honest about itself, and
+//   muting needs no special case — muting genuinely pauses the producer, no RTP flows, and
+//   that reads as silence exactly as it should.
+//
+// They are combined rather than chosen between: activity is the LATER of "last spoke" and
+// "last touched the machine", because either is evidence of a person. A browser reports no
+// idle time at all — it cannot see input to other windows and there is no approximation
+// worth making — so it simply keeps the older behaviour.
+//
+// A client that stops reporting goes STALE rather than sticking. Trusting a last-known
+// idle figure forever would let a crashed or hostile client pin somebody active
+// permanently, which is the one way a self-reported signal can be worse than none.
+//
+// Three exemptions matter more than the timer does:
 //
 //   Anyone sharing a screen or camera is never moved. A person presenting to the group
 //   is the least idle participant in the room, and they are precisely the one who will
 //   not be talking.
 //
-//   Anyone with no microphone at all is never moved. There is nothing to measure, and
-//   moving them would punish having no working mic rather than being away.
+//   Anyone with no microphone at all is never moved WHEN silence is all we have. With a
+//   real idle signal there is something to measure, so the exemption stops applying —
+//   otherwise every listener with a broken mic would be permanently exempt.
 //
-// This is mic silence, not general inactivity. Discord and TeamSpeak both key their
-// equivalents off keyboard and mouse idleness, which a browser cannot see. When the
-// native client lands it can report OS idle time and this module should prefer that;
-// the exemptions above are what make the weaker signal tolerable until then.
+//   Anyone who has opted out, per account.
+//
+// What none of this can see is somebody watching a video in ANOTHER application. At the
+// operating system's level that is identical to an empty chair. The one case Weave can
+// answer it does: a client watching a stream inside Weave reports itself as active.
 
 import { HOOKS } from '../../core/hooks/index.js';
 import { SLOTS } from '../../core/peers/index.js';
+import { reportedIdleMs, activeSince, exemptionFor } from './policy.js';
 
 const SWEEP_INTERVAL_MS = 60_000;
 
@@ -30,8 +49,10 @@ export function register(ctx) {
 
     ctx.settings.define('idleMinutes', {
         type: 'number', integer: true, min: 1, max: 1440,
-        label: 'Move after (minutes of silence)',
-        help: 'How long a microphone must be quiet before its owner is moved to the away channel.',
+        label: 'Move after (minutes of inactivity)',
+        help: 'How long somebody must be inactive before being moved to the away channel. '
+            + 'The desktop app reports keyboard and mouse idleness; for browser clients this '
+            + 'is measured as silence on their microphone instead.',
     }, 20);
 
     ctx.settings.define('enabled', {
@@ -58,12 +79,7 @@ export function register(ctx) {
         db.prepare('SELECT user_id FROM afk_optouts').all().map((r) => r.user_id),
     );
 
-    const isExempt = (peer) => {
-        if (peer.producers.has(SLOTS.SCREEN) || peer.producers.has(SLOTS.WEBCAM)) return 'sharing';
-        if (!peer.producers.has(SLOTS.AUDIO)) return 'no microphone';
-        if (optedOut.has(peer.userId)) return 'opted out';
-        return null;
-    };
+    const isExempt = (peer, now) => exemptionFor(peer, { optedOut, slots: SLOTS, now });
 
     ctx.http.route('GET', '/api/afk/opt-out', ({ session, json }) => {
         json(200, { optedOut: optedOut.has(session.userId) });
@@ -102,15 +118,21 @@ export function register(ctx) {
             if (channel.id === away.id) continue;
 
             for (const peer of ctx.peers.inChannel(channel.id)) {
-                const exempt = isExempt(peer);
+                const exempt = isExempt(peer, now);
                 if (exempt) continue;
 
-                const since = lastActive.get(peer.cid) ?? peer.joinedAt;
+                const spoke = lastActive.get(peer.cid) ?? peer.joinedAt;
+                const since = activeSince({ peer, spoke, now });
                 if (now - since < threshold) continue;
 
+                const touched = reportedIdleMs(peer, now);
+
                 ctx.log.info(
-                    { evt: 'afk.moved', user: peer.username, idleMs: now - since },
-                    `Moving ${peer.username} to ${away.name} after ${Math.round((now - since) / 60000)} minutes of silence`,
+                    {
+                        evt: 'afk.moved', user: peer.username, idleMs: now - since,
+                        signal: touched === null ? 'mic-silence' : 'os-idle',
+                    },
+                    `Moving ${peer.username} to ${away.name} after ${Math.round((now - since) / 60000)} minutes of inactivity`,
                 );
                 ctx.actions.movePeer(peer.cid, away.id, 'afk_timeout');
                 stamp(peer.cid);

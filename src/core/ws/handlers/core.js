@@ -207,6 +207,16 @@ export function registerCoreWsHandlers({
         // frame, because the bookkeeping missed it too. This snapshot is the server's
         // memory, not the client's.
         const peer = peers.get(ws.cid);
+
+        // How long that machine has been untouched, when its client can tell us. Recorded
+        // rather than acted on here: the core does not decide what counts as away, it just
+        // remembers the last thing it was told and when. A client that stops reporting
+        // goes stale rather than pinning somebody active forever.
+        if (peer && Number.isFinite(msg.idleMs) && msg.idleMs >= 0) {
+            peer.idleMs = msg.idleMs;
+            peer.idleReportedAt = Date.now();
+        }
+
         const roomTruth = peer?.channelId
             ? peers.inChannel(peer.channelId, ws.cid).map((p) => ({
                 cid: p.cid,
