@@ -35,6 +35,9 @@ export class PeerRegistry {
             username: session.username,
             displayName: session.displayName,
             avatar: session.avatar,
+            // Declared, not derived. The roster separately works out "away" from standing
+            // in an AFK channel; this is what the person themselves said.
+            status: session.status ?? 'online',
             isAdmin: session.isAdmin,
             channelId,
             protocol,
@@ -104,6 +107,7 @@ export class PeerRegistry {
             username: peer.username,
             displayName: peer.displayName,
             avatar: peer.avatar,
+            status: peer.status,
             channelId: peer.channelId,
             muted: peer.muted,
             deafened: peer.deafened,

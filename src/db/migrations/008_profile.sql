@@ -1,0 +1,13 @@
+-- What somebody chooses to say about themselves: a status, and a picture.
+--
+-- Status is DECLARED, not inferred. The roster already derives "away" from standing in an
+-- AFK channel, and that stays — but it answers a different question. Being moved to the
+-- away room is about where your body is; a status is about whether you want to be
+-- disturbed, and only its owner gets to set it. Conflating the two means the AFK sweep
+-- silently overwrites a decision somebody made on purpose.
+--
+-- The avatar column already existed and had never been writable: it has been carried
+-- through the session, the roster and every chat message since the first migration while
+-- being null for every account on every server. It now holds the id of a file under
+-- <data>/avatars, and stays TEXT so nothing downstream has to change.
+ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'online';

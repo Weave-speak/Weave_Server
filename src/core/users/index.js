@@ -144,7 +144,7 @@ export function validateDisplayName(name) {
 // rendered as an em-dash for everyone, which looks like "nobody has ever signed in"
 // rather than "this field was never selected".
 const PUBLIC_COLUMNS = `
-    id, username, display_name AS displayName, avatar,
+    id, username, display_name AS displayName, avatar, status,
     is_admin AS isAdmin, created_at AS createdAt, last_seen_at AS lastSeenAt
 `;
 
@@ -192,6 +192,48 @@ export async function createUser(db, {
 
 export function getUserById(db, id) {
     return toUser(db.prepare(`SELECT ${PUBLIC_COLUMNS} FROM users WHERE id = ?`).get(id));
+}
+
+/**
+ * What somebody may declare about themselves.
+ *
+ * Deliberately two. 'offline' is not on the list because it is not a choice — it is what
+ * having no connection looks like, and letting somebody claim it while connected would
+ * make the roster lie. Adding 'busy' later is a value and a colour, nothing more.
+ */
+export const STATUSES = Object.freeze(['online', 'away']);
+
+export const isStatus = (value) => STATUSES.includes(value);
+
+/**
+ * Change what a person has published about themselves.
+ *
+ * Only the two fields a person owns. Everything else about an account — admin, disabled,
+ * username — is somebody else's decision and belongs on the admin routes, so this cannot
+ * be widened by passing extra keys.
+ */
+export function updateProfile(db, userId, { status, avatar } = {}) {
+    const sets = [];
+    const values = [];
+
+    if (status !== undefined) {
+        if (!isStatus(status)) {
+            throw new UserError(`Status must be one of: ${STATUSES.join(', ')}.`, 'status');
+        }
+        sets.push('status = ?');
+        values.push(status);
+    }
+    // null is meaningful here — it is how a picture is REMOVED — so the check is for
+    // absence, not for falsiness.
+    if (avatar !== undefined) {
+        sets.push('avatar = ?');
+        values.push(avatar === null ? null : String(avatar));
+    }
+
+    if (sets.length) {
+        db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...values, userId);
+    }
+    return getUserById(db, userId);
 }
 
 export function getUserByUsername(db, username) {

@@ -63,6 +63,10 @@ export function registerAuthRoutes({ router, db, log, auth, setup, settings }) {
             username: user.username,
             displayName: user.displayName,
             avatar: user.avatar,
+            // Carried from the first response so the client paints the right dot on the
+            // very first frame, rather than showing everybody as online for the half
+            // second before /api/me lands.
+            status: user.status ?? 'online',
             isAdmin: user.isAdmin,
         },
     });
