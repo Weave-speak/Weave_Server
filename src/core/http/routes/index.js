@@ -6,6 +6,7 @@
 import { HttpError } from '../server.js';
 import { registerAuthRoutes } from './auth.js';
 import { registerAdminRoutes } from './admin.js';
+import { registerProfileRoutes } from './profile.js';
 import { registerAdminStatic } from '../static.js';
 import { registerInvitePage } from './invite-page.js';
 import {
@@ -38,6 +39,7 @@ export function registerCoreRoutes(deps) {
 
     registerAuthRoutes(deps);
     registerAdminRoutes(deps);
+    registerProfileRoutes(deps);
     registerAdminStatic(deps);
     registerInvitePage(deps);
 
@@ -156,16 +158,16 @@ export function registerCoreRoutes(deps) {
     // HTTP method, with no authentication at all.
     router.register('core', 'GET', '/api/users', ({ json }) => {
         json(200, {
-            users: listUsers(db).map(({ id, username, displayName, avatar }) =>
-                ({ id, username, displayName, avatar })),
+            users: listUsers(db).map(({ id, username, displayName, avatar, status }) =>
+                ({ id, username, displayName, avatar, status })),
         });
     });
 
     router.register('core', 'GET', '/api/users/:id', ({ params, json }) => {
         const user = getUserById(db, params.id);
         if (!user) throw new HttpError(404, 'No such user.');
-        const { id, username, displayName, avatar } = user;
-        json(200, { user: { id, username, displayName, avatar } });
+        const { id, username, displayName, avatar, status } = user;
+        json(200, { user: { id, username, displayName, avatar, status } });
     });
 
     // ── Modules ──────────────────────────────────────────────────────────────

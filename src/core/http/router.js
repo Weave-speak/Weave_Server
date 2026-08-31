@@ -135,7 +135,10 @@ export function corsHeaders(origin) {
     return {
         'Access-Control-Allow-Origin': origin,
         'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        // PATCH is on the list because a browser refuses a method the preflight did not
+        // name, and it refuses it BEFORE the request is sent — so the symptom is a CORS
+        // error rather than anything the route could report.
+        'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
         'Access-Control-Max-Age': '600',
         Vary: 'Origin',
         // Allow-Credentials is deliberately absent. See the note at the top of this file.

@@ -12,47 +12,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { HttpError } from '../../core/http/server.js';
+// One list of what Weave accepts, shared with avatars. A module may reach into core;
+// core may never reach into a module.
+import { sniffImage, IMAGE_REFUSAL } from '../../core/media/image-type.js';
 
 const MAX_BYTES = 10 * 1024 * 1024;
-
-const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-/** Signatures we accept. Anything not on this list is refused outright. */
-const SIGNATURES = [
-    {
-        ext: 'png',
-        mime: 'image/png',
-        test: (b) => b.subarray(0, 8).equals(PNG_MAGIC),
-    },
-    {
-        ext: 'jpg',
-        mime: 'image/jpeg',
-        test: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
-    },
-    {
-        ext: 'gif',
-        mime: 'image/gif',
-        test: (b) => b.subarray(0, 4).toString('ascii') === 'GIF8',
-    },
-    {
-        ext: 'webp',
-        mime: 'image/webp',
-        test: (b) => b.subarray(0, 4).toString('ascii') === 'RIFF'
-            && b.subarray(8, 12).toString('ascii') === 'WEBP',
-    },
-];
-
-function sniff(buffer) {
-    if (buffer.length < 12) return null;
-    for (const sig of SIGNATURES) {
-        try {
-            if (sig.test(buffer)) return sig;
-        } catch {
-            // A truncated or malformed buffer is simply not a match.
-        }
-    }
-    return null;
-}
 
 export function register(ctx) {
     ctx.db.migrate();
@@ -73,11 +37,11 @@ export function register(ctx) {
         const buffer = Buffer.isBuffer(body) ? body : Buffer.alloc(0);
         if (!buffer.length) throw new HttpError(400, 'No file was sent.');
 
-        const kind = sniff(buffer);
+        const kind = sniffImage(buffer);
         if (!kind) {
             // Deliberately phrased about what it IS, not what it was called: the
             // extension and the declared type were never consulted.
-            throw new HttpError(415, 'That does not look like a PNG, JPEG, GIF or WebP image.');
+            throw new HttpError(415, IMAGE_REFUSAL);
         }
 
         const id = crypto.randomUUID();

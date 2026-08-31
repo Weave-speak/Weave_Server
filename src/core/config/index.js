@@ -160,6 +160,11 @@ export function loadConfig(env = process.env, { cwd = process.cwd() } = {}) {
     cfg.logDir = path.resolve(cwd, cfg.logDir);
     cfg.dbPath = path.join(cfg.dataDir, 'weave.db');
     cfg.uploadsDir = path.join(cfg.dataDir, 'uploads');
+    // Deliberately NOT inside uploadsDir. The uploads module sweeps that directory on a
+    // retention timer — 30 days by default — so an avatar kept there would quietly stop
+    // existing after a month, and the only symptom would be everybody's picture turning
+    // back into initials. A profile picture is identity, not an attachment.
+    cfg.avatarsDir = path.join(cfg.dataDir, 'avatars');
     cfg.backupsDir = path.join(cfg.dataDir, 'backups');
     cfg.warnings = [];
     // Derived so the installer, `weave doctor` and the admin UI can all state exactly

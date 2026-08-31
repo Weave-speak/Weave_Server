@@ -7,6 +7,37 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.20] - 2026-08-31
+
+### Added
+- **A profile picture.** Settings → My Profile has an upload button, and the picture you
+  choose is cropped in a circular frame before it is sent — drag it to pick what sits
+  inside the circle. It appears wherever you do: the room list, the bottom bar, every
+  message you have sent.
+
+  The cropping happens on your own machine and only the finished square is uploaded, so
+  the picture stored is exactly the one you framed rather than a server's later guess at
+  it. What arrives is checked by its own bytes, not by what it was called — a file that
+  says it is a PNG and is not is refused.
+
+- **A status you set yourself.** Online or Away, chosen behind your own name in the bottom
+  bar rather than buried in settings. It is stored on your account, so it survives closing
+  the app, and everybody else sees it on the dot beside your name.
+
+  This is a separate thing from being moved to the away room. That happens on a timer when
+  your microphone has been quiet, and it is about where you are; a status is about whether
+  you want to be disturbed. Neither one overwrites the other any more — being moved for
+  going quiet will not undo a status you chose on purpose.
+
+### Changed
+- The dot beside somebody's name in a room now means something. It used to say only
+  "connected", which everybody listed under a room is by definition; it now carries what
+  that person has said about themselves.
+
+- Profile pictures are stored apart from message attachments, and are not affected by the
+  uploads retention setting. An attachment can be cleaned up after a month; a face should
+  not quietly disappear.
+
 ## [0.1.19] - 2026-08-31
 
 ### Added

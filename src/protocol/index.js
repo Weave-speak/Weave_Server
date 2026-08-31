@@ -44,6 +44,10 @@ export const CORE_FEATURES = Object.freeze([
     // pressing them will do something — against an older server they are simply absent,
     // rather than present and failing.
     'moderation',
+    // A profile picture and a declared status. Advertised because the client's profile
+    // panel has carried "the server has no route for this yet" placeholders since it was
+    // written, and it needs to know when that stopped being true.
+    'profile',
 ]);
 
 export class ProtocolMismatchError extends Error {
