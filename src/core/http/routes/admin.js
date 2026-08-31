@@ -18,6 +18,7 @@ import path from 'node:path';
 import { listUsers, getUserById, setPassword, UserError } from '../../users/index.js';
 import { revokeAllForUser } from '../../auth/index.js';
 import { checkIntegrity, migrationStatus } from '../../../db/index.js';
+import { audit as writeAudit } from '../../admin/audit.js';
 
 /**
  * Columns never sent to a browser and never accepted from one.
@@ -73,10 +74,10 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
     const admin = (method, path, handler, opts = {}) =>
         router.register('core', method, path, handler, { ...opts, auth: 'admin' });
 
-    const audit = (session, action, target, detail) => {
-        db.prepare('INSERT INTO audit_log (actor_id, action, target, detail) VALUES (?, ?, ?, ?)')
-            .run(session.userId, action, target ?? null, detail ?? null);
-    };
+    // The shared writer, so an audit row written from the WebSocket side looks identical
+    // to one written here.
+    const audit = (session, action, target, detail) =>
+        writeAudit(db, { actorId: session.userId, action, target, detail });
 
     // ── overview ─────────────────────────────────────────────────────────────
     admin('GET', '/api/admin/overview', async ({ json }) => {

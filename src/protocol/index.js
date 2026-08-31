@@ -37,6 +37,13 @@ export const CORE_FEATURES = Object.freeze([
     // Against a server without it, the client skips straight to rebuilding the transport,
     // which is exactly what every client did before this existed.
     'media.ice-restart',
+    // An administrator can put somebody in a channel. The handler has existed since the
+    // signalling was written but was never advertised, so no client ever offered it.
+    'peers.admin-move',
+    // Server mute and kick. Advertised so a client renders those menu entries only where
+    // pressing them will do something — against an older server they are simply absent,
+    // rather than present and failing.
+    'moderation',
 ]);
 
 export class ProtocolMismatchError extends Error {

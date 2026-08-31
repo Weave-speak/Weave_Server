@@ -23,6 +23,8 @@ import { createAuth, purgeExpiredSessions } from './core/auth/index.js';
 import { SetupState } from './core/setup/index.js';
 import { watchAnnouncedAddress } from './core/sfu/address-watch.js';
 import { watchRoomMedia } from './core/sfu/media-reconcile.js';
+import { createEnforcer } from './core/moderation/enforce.js';
+import { watchMuteExpiry } from './core/moderation/sweep.js';
 import { ensureDefaults, listChannels, visibleChannels } from './core/channels/index.js';
 import { registerCoreRoutes } from './core/http/routes/index.js';
 import { createSfu } from './core/sfu/index.js';
@@ -154,7 +156,12 @@ export async function start(env = process.env) {
     });
 
     registerCoreRoutes({ router, db, config, log, auth, setup, hooks, moduleHost, sfu, peers, settings, ws: wsFacade });
-    registerCoreWsHandlers({ registry: wsRegistry, peers, sfu, db, auth, log, hooks, ws });
+    // One enforcer, shared by the handler that applies a mute and the sweep that lifts an
+    // expired one, so the two cannot drift into doing different things.
+    const applyForceMute = createEnforcer({ peers, ws });
+    registerCoreWsHandlers({
+        registry: wsRegistry, peers, sfu, db, auth, log, hooks, ws, applyForceMute,
+    });
 
     moduleHost.discover(path.join(import.meta.dirname, 'modules'));
     await moduleHost.loadAll();
@@ -212,6 +219,10 @@ export async function start(env = process.env) {
     // halves, so it reconciles them.
     const stopMediaReconcile = watchRoomMedia({ peers, ws: wsFacade, log });
 
+    // A timed server mute is out of force the instant it expires, but somebody already
+    // connected has a PAUSED producer that nothing would ever resume. This is what does.
+    const stopMuteExpiry = watchMuteExpiry({ db, log, applyForceMute });
+
     hooks.emit(HOOKS.SERVER_READY, { config, version: pkg.version });
 
     // ── Shutdown ─────────────────────────────────────────────────────────────
@@ -224,6 +235,7 @@ export async function start(env = process.env) {
         hooks.emit(HOOKS.SERVER_STOPPING, {});
         stopAddressWatch();
         stopMediaReconcile();
+        stopMuteExpiry();
         await ws.close();
         await sfu.close();
         await new Promise((resolve) => server.close(resolve));
