@@ -7,6 +7,35 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.21] - 2026-08-31
+
+### Changed
+- **Being moved to the away room now depends on whether you are at your computer, not on
+  whether you have been talking.** Until now the only thing this server could measure was
+  silence on your microphone, which called somebody working quietly in another window
+  "away" while they sat right there.
+
+  The desktop app reports how long the keyboard and mouse have gone untouched — across
+  every application, not just Weave — and that is used where it is available. Talking still
+  counts too: whichever happened more recently is what the server goes by, because either
+  one means somebody is there.
+
+  Nothing changes for people using Weave in a browser. A web page cannot see input to other
+  windows, so those clients say nothing and are judged on microphone silence exactly as
+  before. This needs the desktop client at **0.1.49** or newer; against anything older the
+  server simply carries on as it did.
+
+- Someone watching a screen share in Weave is treated as present, however long they go
+  without touching anything. A video playing in a different application still cannot be
+  seen — to the operating system that looks the same as an empty chair — so a generous
+  timeout remains the thing protecting you there.
+
+- Having no working microphone no longer exempts you outright. It did because there was
+  nothing to measure; where your keyboard can be seen, there now is.
+
+- The away setting is called "Move after (minutes of inactivity)" rather than "minutes of
+  silence", because that is now what it means.
+
 ## [0.1.20] - 2026-08-31
 
 ### Added
