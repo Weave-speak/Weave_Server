@@ -11,7 +11,7 @@ need and what to use instead today. The same list lives in `admin/app.js` as the
 | Screen | Where | Status |
 |---|---|---|
 | Roles & Permissions | Community | Placeholder |
-| Timeouts | Moderation | Placeholder |
+| Timeouts | Moderation | Partly built — the actions exist, the console view does not |
 | Bug Reports | Moderation | Placeholder |
 | Bubbles | Customise | Placeholder |
 | Diagnostics | System | Placeholder |
@@ -40,18 +40,25 @@ the WebSocket registry for message types.
 
 ## Timeouts
 
-**Why it is empty.** Moderation beyond deleting an account has not been built. There is no
-kick, no ban, and no temporary restriction.
+**Why it is empty.** Moderation itself now exists — `moderation` in `features[]`, the
+`moderation` table, `src/core/moderation/`, and the `serverMute` and `kickPeer` WebSocket
+messages. A server mute survives a reconnect because it is loaded in the join handler, and
+a kick records a cooldown that the join handler refuses inside; disconnecting someone
+without blocking the reconnect is theatre.
+
+What this screen is missing is the **view** of it. Every mute and kick is applied by
+right-clicking a person in the client, which means an administrator who is not in a room
+with someone cannot see or lift a restriction on them at all.
 
 **What it needs**
 
-- Kick (disconnect the socket), ban (block the account), timeout (temporary mute or block).
-- A moderation table with an expiry column, and a sweep that lifts expired entries —
-  the same shape as the AFK module's sweep.
-- **Enforcement in the join handler**, so a banned account cannot simply reconnect.
-  Disconnecting someone without blocking the reconnect is theatre.
+- A list of what is in force: who, which restriction, applied by whom, and when it ends.
+- Lifting one from here, instead of having to find the person in a room first.
+- **Ban as a separate verb.** A kick is a cooldown measured in seconds; blocking an account
+  is a different decision, and today it lives on the Members screen instead.
 
-**Use instead.** Members → **Delete** removes an account permanently.
+**Use instead.** Right-click somebody in the client to server-mute or kick them.
+Members → **Ban** blocks an account outright; **Delete** removes it permanently.
 
 ---
 

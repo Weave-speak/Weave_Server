@@ -7,6 +7,35 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.19] - 2026-08-31
+
+### Added
+- **Server mute.** An administrator can silence somebody, and unlike the mute button in
+  your own bar, the person it is applied to cannot lift it. Pick five minutes, an hour, or
+  until you lift it yourself. It is stored rather than remembered, so signing out and back
+  in does not clear it, and it is applied to the account rather than to one connection —
+  somebody signed in on two machines is muted on both. Your microphone button says who
+  muted you and until when, rather than quietly doing nothing.
+
+- **Kick.** Closes every connection an account holds and holds the door shut for a minute.
+  The minute is the point: a client reconnects on its own and remembers the room it was in,
+  so a kick that only cut the connection would have put the person back where they were
+  about a second later. They return signed in and standing in no room.
+
+- **An administrator can move somebody into a channel.** The ability had been in the server
+  since signalling was written and no client had ever been able to ask for it. Drag a person
+  in the sidebar onto a room.
+
+### Fixed
+- Moving somebody as an administrator now refuses the same things you are refused when you
+  move yourself: into a text channel, which is a place you read rather than stand, and into
+  a private room they are not a member of. It also moves every connection they hold rather
+  than one, so nobody is left audible in the room they were moved out of.
+
+- Administrative actions are written to the audit log. Until now nothing done over the live
+  connection was recorded there — including moving somebody between rooms, which has been
+  possible for as long as the server has existed.
+
 ## [0.1.18] - 2026-08-30
 
 ### Changed

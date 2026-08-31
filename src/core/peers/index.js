@@ -40,6 +40,12 @@ export class PeerRegistry {
             protocol,
             muted: false,
             deafened: false,
+            // Muted BY somebody else. Kept apart from `muted` because they answer
+            // different questions: `muted` is a choice this person made and may unmake,
+            // forceMuted is a decision they cannot. Collapsing them would leave a client
+            // showing an unmute button that silently does nothing.
+            forceMuted: false,
+            forceMutedUntil: null,
             joinedAt: Date.now(),
             transports: new Map(),  // 'send' | 'recv' -> transport
             producers: new Map(),   // slot -> producer
@@ -101,6 +107,8 @@ export class PeerRegistry {
             channelId: peer.channelId,
             muted: peer.muted,
             deafened: peer.deafened,
+            forceMuted: peer.forceMuted,
+            forceMutedUntil: peer.forceMutedUntil,
             producers: [...peer.producers.entries()].map(([slot, producer]) => ({
                 slot, id: producer.id, kind: producer.kind, paused: producer.paused,
             })),

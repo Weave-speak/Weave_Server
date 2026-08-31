@@ -33,13 +33,14 @@ const PLACEHOLDERS = {
     },
     timeouts: {
         title: 'Timeouts',
-        why: 'Moderation beyond removing an account has not been built.',
+        why: 'Server mute and kick exist, but only from the client — this console cannot see or lift them.',
         needs: [
-            'Kick (disconnect), ban (block the account), and timeout (temporary mute or block)',
-            'A moderation table with expiry, and a sweep that lifts them',
-            'Enforcement in the join handler so a banned account cannot reconnect',
+            'A list of the mutes and kicks currently in force, with who applied each and when it ends',
+            'Lifting one from here, rather than having to find the person in a room first',
+            'Ban as a separate verb: a kick is a cooldown, and blocking an account is not the same thing',
         ],
-        instead: 'Members → Delete removes an account permanently.',
+        instead: 'Right-click somebody in the client to server-mute or kick them. '
+            + 'Members → Ban blocks an account outright.',
     },
     bugreports: {
         title: 'Bug Reports',

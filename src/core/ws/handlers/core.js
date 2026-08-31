@@ -18,13 +18,42 @@ import { movePeer } from '../../peers/move.js';
 import { viewFor, snapshotFor } from '../../peers/visibility.js';
 import { getChannel, defaultChannel, isMember, touchOccupancy } from '../../channels/index.js';
 import { negotiate, ProtocolMismatchError } from '../../../protocol/index.js';
-import { touchLastSeen } from '../../users/index.js';
+import { touchLastSeen, getUserById } from '../../users/index.js';
 import { HOOKS } from '../../hooks/index.js';
+import {
+    activeMute, activeKick, mute as applyMute, unmute as liftMute, recordKick,
+    KICK_COOLDOWN_MS,
+} from '../../moderation/index.js';
+import { createEnforcer } from '../../moderation/enforce.js';
+import { audit } from '../../admin/audit.js';
 
 /** Deliberate leave, so others are told at once instead of after the grace window. */
 export const LEAVE_CLOSE_CODE = 4000;
 
-export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, hooks, ws: wsServer }) {
+/**
+ * Kicked by an administrator.
+ *
+ * Deliberately NOT one of the 4003-4005 codes the client treats as final. Those mean the
+ * session is gone and reconnecting is pointless; a kick is temporary, and the client is
+ * expected to come back after the cooldown standing in no room.
+ */
+export const KICK_CLOSE_CODE = 4006;
+
+/**
+ * The longest a timed server mute may run: a week.
+ *
+ * Not a policy, a typo guard. "Until an administrator lifts it" is already available by
+ * passing no duration at all, so anything longer than this is somebody who meant minutes
+ * and typed something else.
+ */
+const MAX_MUTE_MINUTES = 7 * 24 * 60;
+
+export function registerCoreWsHandlers({
+    registry, peers, sfu, db, auth, log, hooks, ws: wsServer,
+    // Injected so the sweep that lifts an expired mute runs the SAME code as the handler
+    // that applies one. Defaulted so a test can register handlers without wiring it.
+    applyForceMute = createEnforcer({ peers, ws: wsServer }),
+}) {
     /**
      * Announce a peer to every OTHER connection, masked per recipient: members of a
      * private room see where they stand, everyone else sees them roomless.
@@ -54,6 +83,19 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         const session = auth.resolveToken(msg.token);
         if (!session) {
             return fail(ws, 'unauthenticated', 'Your session has expired. Sign in again.');
+        }
+
+        // Checked before anything else, because a kick that only closes the socket is
+        // theatre: the client reconnects a second later carrying the room it remembers,
+        // and from every other screen nothing happened at all.
+        const kick = activeKick(db, session.userId);
+        if (kick) {
+            const seconds = Math.max(1, Math.ceil((kick.expiresAt - Date.now()) / 1000));
+            fail(ws, 'kicked',
+                `You were removed by an administrator. You can rejoin in ${seconds}s.`,
+                { retryAfterMs: kick.expiresAt - Date.now() });
+            try { ws.close(KICK_CLOSE_CODE, 'kicked'); } catch { /* going anyway */ }
+            return;
         }
 
         // Agree a protocol version before anything else, so a mismatch is reported as a
@@ -86,6 +128,15 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         ws.session = session;
         const peer = peers.add(ws, session, channel?.id ?? null, protocol);
         touchLastSeen(db, session.userId);
+
+        // Loaded BEFORE the joined frame, so the very first thing this client is told
+        // about itself is already true. A mute that only arrived in a later broadcast
+        // would give them a window in which their unmute button looked like it worked.
+        const standingMute = activeMute(db, session.userId);
+        if (standingMute) {
+            peer.forceMuted = true;
+            peer.forceMutedUntil = standingMute.expiresAt;
+        }
 
         ws.log = log.child({ cid: ws.cid, user: session.username });
         ws.log.info({ evt: 'peer.joined', channel: channel?.name ?? '(nowhere)' },
@@ -357,6 +408,12 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
         });
 
         peer.producers.set(slot, producer);
+
+        // A forced mute has to survive the producer being REBUILT — which is what a move
+        // across mediasoup workers does, and what a reconnect does. Pausing only where the
+        // mute is applied would let anyone escape one by moving rooms.
+        if (slot === SLOTS.AUDIO && (peer.forceMuted || peer.muted)) await producer.pause();
+
         producer.on('transportclose', () => {
             peer.producers.delete(slot);
             // Announced, not just forgotten. A transport dying used to remove the producer
@@ -534,24 +591,137 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
     });
 
     // ── admin: move someone else ─────────────────────────────────────────────
+    //
+    // Takes a userId in preference to a cid, and moves EVERY connection that account
+    // holds. The roster shows one row per person, so dragging that row and having only the
+    // laptop follow while the phone stays behind is not a move anybody asked for.
     registry.register('core', 'adminMove', ({ ws, msg, send, fail }) => {
-        const target = peers.get(msg.cid);
-        if (!target) return fail(ws, 'no_peer', 'That person is no longer connected.');
+        const targets = msg.userId ? peers.forUser(msg.userId)
+            : [peers.get(msg.cid)].filter(Boolean);
+        if (!targets.length) return fail(ws, 'no_peer', 'That person is no longer connected.');
 
         const channel = getChannel(db, msg.channelId);
         if (!channel) return fail(ws, 'no_channel', 'No such channel.');
 
+        // The same two refusals self-`move` makes. They were missing here, which meant the
+        // admin path could put somebody somewhere they could not have gone themselves:
+        // into a text channel, which is a place you read rather than stand, or into a
+        // private room whose membership is the entire point of it being private.
+        if (channel.kind === 'text') {
+            return fail(ws, 'text_channel', `${channel.name} is a text channel — nobody stands there.`);
+        }
+        if (channel.private && !isMember(db, channel.id, targets[0].userId)) {
+            return fail(ws, 'not_a_member',
+                `${channel.name} is private — add them to it before moving them there.`);
+        }
+
         const mover = peers.get(ws.cid);
-        movePeer({
-            db, peer: target, channel, peers, sfu, ws: wsServer, hooks,
-            // The reason reaches the moved client so it can say something true rather
-            // than showing "moved by an administrator" for every kind of move.
-            reason: 'admin', by: mover.displayName ?? mover.username,
+        const by = mover.displayName ?? mover.username;
+        for (const target of targets) {
+            movePeer({
+                db, peer: target, channel, peers, sfu, ws: wsServer, hooks,
+                // The reason reaches the moved client so it can say something true rather
+                // than showing "moved by an administrator" for every kind of move.
+                reason: 'admin', by,
+            });
+        }
+
+        const [first] = targets;
+        audit(db, {
+            actorId: mover.userId, action: 'ADMIN_MOVED', target: first.username,
+            detail: channel.name,
+        });
+        ws.log.warn({ evt: 'peer.admin_moved', target: first.username, to: channel.name },
+            `${mover.username} moved ${first.username} to ${channel.name}`);
+        send('adminMoved', { cid: first.cid, userId: first.userId, channel });
+    }, { auth: 'admin' });
+
+    // ── admin: server mute ───────────────────────────────────────────────────
+    //
+    // Distinct from `setMute` in the one way that matters: the person it is applied to
+    // cannot lift it. It is written to the database, so it survives their reconnecting,
+    // and it is applied per ACCOUNT rather than per connection.
+    registry.register('core', 'serverMute', async ({ ws, msg, send, fail }) => {
+        const actor = peers.get(ws.cid);
+        const targetId = String(msg.userId ?? '');
+        if (!targetId) return fail(ws, 'no_user', 'Which account?');
+        if (targetId === actor.userId) {
+            return fail(ws, 'not_yourself', 'Use your own mute button for that.');
+        }
+
+        const target = getUserById(db, targetId);
+        if (!target) return fail(ws, 'no_user', 'No such account.');
+        // An administrator silencing another administrator is a fight the server should
+        // not referee, and it is the shape every mute-war starts as.
+        if (target.isAdmin) {
+            return fail(ws, 'forbidden', 'Administrators cannot server-mute one another.');
+        }
+
+        const wanted = msg.muted !== false;
+        // null minutes is the "until an administrator lifts it" form; anything else is
+        // clamped, so a typo cannot mute somebody for a century.
+        const minutes = msg.minutes == null ? null
+            : Math.min(MAX_MUTE_MINUTES, Math.max(1, Number(msg.minutes) || 0));
+
+        let until = null;
+        if (wanted) until = applyMute(db, { userId: targetId, byUserId: actor.userId, minutes }).expiresAt;
+        else liftMute(db, { userId: targetId, byUserId: actor.userId });
+
+        await applyForceMute(targetId, wanted, until);
+
+        audit(db, {
+            actorId: actor.userId,
+            action: wanted ? 'ADMIN_SERVER_MUTED' : 'ADMIN_SERVER_UNMUTED',
+            target: target.username,
+            detail: wanted ? (minutes == null ? 'until lifted' : `${minutes}m`) : null,
+        });
+        ws.log.warn({ evt: 'peer.server_muted', target: target.username, muted: wanted, minutes },
+            `${actor.username} ${wanted ? 'server-muted' : 'un-server-muted'} ${target.username}`);
+
+        send('serverMuteChanged', { userId: targetId, forceMuted: wanted, until });
+    }, { auth: 'admin' });
+
+    // ── admin: kick ──────────────────────────────────────────────────────────
+    //
+    // Closes every socket the account holds AND records a cooldown, because the client
+    // reconnects on its own and remembers the room it was in. Without the record this
+    // would put somebody straight back where they were, roughly a second later.
+    registry.register('core', 'kickPeer', ({ ws, msg, send, fail }) => {
+        const actor = peers.get(ws.cid);
+        const targetId = String(msg.userId ?? '');
+        if (!targetId) return fail(ws, 'no_user', 'Which account?');
+        if (targetId === actor.userId) return fail(ws, 'not_yourself', 'You cannot kick yourself.');
+
+        const target = getUserById(db, targetId);
+        if (!target) return fail(ws, 'no_user', 'No such account.');
+        if (target.isAdmin) return fail(ws, 'forbidden', 'Administrators cannot kick one another.');
+
+        const record = recordKick(db, {
+            userId: targetId, byUserId: actor.userId, reason: msg.reason ?? null,
         });
 
-        ws.log.warn({ evt: 'peer.admin_moved', target: target.username, to: channel.name },
-            `${mover.username} moved ${target.username} to ${channel.name}`);
-        send('adminMoved', { cid: target.cid, channel });
+        let closed = 0;
+        for (const peer of peers.forUser(targetId)) {
+            // Sent before the close, so the person reads a sentence rather than watching
+            // the line drop for no stated reason. Closing flushes what is already queued,
+            // so this arrives.
+            wsServer.send(peer.ws, 'kicked', {
+                by: actor.displayName ?? actor.username,
+                until: record.expiresAt,
+                retryAfterMs: KICK_COOLDOWN_MS,
+            });
+            try { peer.ws.close(KICK_CLOSE_CODE, 'kicked'); } catch { /* going anyway */ }
+            closed += 1;
+        }
+
+        audit(db, {
+            actorId: actor.userId, action: 'ADMIN_KICKED', target: target.username,
+            detail: msg.reason ?? null,
+        });
+        ws.log.warn({ evt: 'peer.kicked', target: target.username, connections: closed },
+            `${actor.username} kicked ${target.username}`);
+
+        send('kickedPeer', { userId: targetId, connections: closed, until: record.expiresAt });
     }, { auth: 'admin' });
 
     // ── mute and deafen ──────────────────────────────────────────────────────
@@ -569,10 +739,15 @@ export function registerCoreWsHandlers({ registry, peers, sfu, db, auth, log, ho
             // Genuinely pause the producer rather than trusting the client to stop
             // sending. This also means no RTP flows, which any activity detection sees
             // as real silence without needing a special case.
-            if (peer.muted) audio.pause(); else audio.resume();
+            //
+            // A forced mute outranks the choice: someone silenced by an administrator may
+            // still press their own mute button, it simply cannot bring them back.
+            if (peer.muted || peer.forceMuted) audio.pause(); else audio.resume();
         }
 
-        send('muteChanged', { muted: peer.muted, deafened: peer.deafened });
+        send('muteChanged', {
+            muted: peer.muted, deafened: peer.deafened, forceMuted: peer.forceMuted,
+        });
         toChannel(peer.channelId, 'peer_mute_changed',
             { cid: peer.cid, muted: peer.muted, deafened: peer.deafened }, ws.cid);
     });
