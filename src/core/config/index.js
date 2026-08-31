@@ -128,6 +128,10 @@ export const SCHEMA = [
         key: 'WEAVE_INSTANCE_NAME', name: 'instanceName', parse: String, default: 'Weave',
         doc: 'Display name shown to clients before they log in.',
     },
+    {
+        key: 'WEAVE_PUBLIC_URL', name: 'publicUrl', parse: String, default: null,
+        doc: 'Canonical origin of this server as seen by the outside world (e.g. https://weave.example.com). Used in invite deep links. When unset, the origin is derived from the Host header — safe behind a proxy, but forgeable without one.',
+    },
 ];
 
 export function loadConfig(env = process.env, { cwd = process.cwd() } = {}) {
@@ -166,6 +170,7 @@ export function loadConfig(env = process.env, { cwd = process.cwd() } = {}) {
     // back into initials. A profile picture is identity, not an attachment.
     cfg.avatarsDir = path.join(cfg.dataDir, 'avatars');
     cfg.backupsDir = path.join(cfg.dataDir, 'backups');
+    if (cfg.publicUrl) cfg.publicUrl = cfg.publicUrl.replace(/\/+$/, '');
     cfg.warnings = [];
     // Derived so the installer, `weave doctor` and the admin UI can all state exactly
     // which ports must be forwarded without recomputing the rule.

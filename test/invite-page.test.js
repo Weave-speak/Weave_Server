@@ -7,13 +7,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { freePort, startWithRetry } from './helpers.js';
 
-async function launch() {
+async function launch(extraEnv = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weave-invpage-'));
     let httpPort;
 
     const app = await startWithRetry(async () => {
         httpPort = await freePort();
         return {
+            ...extraEnv,
             WEAVE_HTTP_PORT: String(httpPort),
             WEAVE_HTTP_BIND: '127.0.0.1',
             WEAVE_MEDIA_PORT: String(await freePort()),
@@ -26,12 +27,13 @@ async function launch() {
     });
 
     const base = `http://127.0.0.1:${httpPort}`;
-    const call = async (method, url, { body, token } = {}) => {
+    const call = async (method, url, { body, token, headers = {} } = {}) => {
         const res = await fetch(base + url, {
             method,
             headers: {
                 ...(body ? { 'Content-Type': 'application/json' } : {}),
                 ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                ...headers,
             },
             body: body ? JSON.stringify(body) : undefined,
         });
@@ -102,4 +104,52 @@ test('the download route answers with a redirect, never a dead end', async (t) =
     // redirects, so a 200 here means the Location resolved; GitHub answers both the
     // asset and the releases page.
     assert.ok([200, 302].includes(page.status), String(page.status));
+});
+
+// ── Where the page says this server lives ────────────────────────────────────
+//
+// The invite page hands a stranger a weave:// link containing an ORIGIN, and that origin
+// is what their client will connect to and sign in against. Deriving it from a header the
+// requester controls means whoever sends the request decides where the invitee's
+// credentials get typed.
+
+test('a forged X-Forwarded-Host is not reflected into the deep link', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+
+    const made = await h.call('POST', '/api/invites', { token: h.adminToken, body: {} });
+    const invite = JSON.parse(made.text).invite;
+
+    const page = await h.call('GET', `/invite/${invite.code}`, {
+        headers: {
+            'X-Forwarded-Host': 'evil.example.com',
+            'X-Forwarded-Proto': 'https',
+        },
+    });
+
+    assert.equal(page.status, 200);
+    assert.ok(!page.text.includes('evil.example.com'),
+        'a header the sender chose must not decide where an invitee signs in');
+    // And it still produces a usable link rather than nothing at all.
+    assert.match(page.text, /weave:\/\/join\?server=/);
+    assert.match(page.text, /127\.0\.0\.1/, 'the host the browser actually asked for');
+});
+
+test('a configured public URL is what the page advertises', async (t) => {
+    // The right answer behind a tunnel: config knows the outside name, the Host header
+    // only knows 127.0.0.1.
+    const h = await launch({ WEAVE_PUBLIC_URL: 'https://weave.example.com/' });
+    t.after(() => h.stop());
+
+    const made = await h.call('POST', '/api/invites', { token: h.adminToken, body: {} });
+    const invite = JSON.parse(made.text).invite;
+
+    const page = await h.call('GET', `/invite/${invite.code}`, {
+        headers: { 'X-Forwarded-Host': 'evil.example.com' },
+    });
+
+    assert.ok(page.text.includes('weave.example.com'), 'the configured origin wins');
+    assert.ok(!page.text.includes('evil.example.com'));
+    // The trailing slash is trimmed, or the link reads https://host//?server=
+    assert.ok(!page.text.includes('weave.example.com/&'), 'no doubled separator');
 });

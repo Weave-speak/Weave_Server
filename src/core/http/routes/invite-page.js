@@ -139,13 +139,23 @@ export function registerInvitePage({ router, db, config, resolveLatestExe = crea
 
         const code = normaliseCode(params.code ?? '');
         const result = code ? checkInvite(db, code) : { ok: false };
-        // The origin the visitor actually used is the one the app should be told about —
-        // config may know the server as 127.0.0.1 behind its tunnel.
-        const host = req.headers['x-forwarded-host'] ?? req.headers.host ?? 'this-server';
-        const proto = req.headers['x-forwarded-proto'] ?? (config.behindTls ? 'https' : 'http');
+
+        let origin;
+        if (config.publicUrl) {
+            origin = config.publicUrl;
+        } else {
+            // Host is safe to reflect here: the browser already sent it, so it matches
+            // what the user typed. Forwarded-host is NOT reflected — it is attacker-
+            // controlled when the request does not come through a trusted proxy, and even
+            // when it does, publicUrl is the right answer.
+            const host = req.headers.host ?? 'this-server';
+            const proto = config.behindTls ? 'https' : 'http';
+            origin = `${proto}://${host}`;
+        }
+
         const html = invitePage({
             serverName: config.instanceName ?? 'a Weave server',
-            origin: `${proto}://${host}`,
+            origin,
             code,
             valid: Boolean(result.ok),
         });

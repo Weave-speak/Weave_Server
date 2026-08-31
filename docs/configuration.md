@@ -74,6 +74,23 @@ transport. Raise the worker count only when one core is genuinely the bottleneck
 
 ## Audio and video quality
 
+### `WEAVE_PUBLIC_URL`
+
+The address the outside world reaches this server on, like `https://weave.example.com`.
+
+It is what the invite page puts into the `weave://` link a stranger clicks, so it decides
+where their client connects and where they type their password. Set it whenever the server
+sits behind a proxy or a tunnel — config otherwise knows this machine as `127.0.0.1`.
+
+Leave it unset and the origin is taken from the `Host` header of the request, which is
+what the visitor's own browser sent and therefore matches what they typed. That is fine
+for a directly-reachable server.
+
+What is deliberately **not** used is `X-Forwarded-Host`. A proxy sets it honestly, but
+anyone who can reach the server directly can send it themselves — and an invite link is
+exactly the wrong thing to let a stranger choose the destination of. Setting this variable
+removes the question entirely.
+
 ### `WEAVE_OPUS_BITRATE`
 
 Defaults to `64000` — what a default Discord voice channel uses. `96000` to `128000` is
