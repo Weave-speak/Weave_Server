@@ -50,6 +50,11 @@ export class PeerRegistry {
             forceMuted: false,
             forceMutedUntil: null,
             joinedAt: Date.now(),
+            // Reported by the client on its heartbeat where the platform can see OS input
+            // at all. Null means "this client cannot tell us", which is not the same as
+            // zero and must not be read as activity.
+            idleMs: null,
+            idleReportedAt: null,
             transports: new Map(),  // 'send' | 'recv' -> transport
             producers: new Map(),   // slot -> producer
             consumers: new Map(),   // consumerId -> consumer
