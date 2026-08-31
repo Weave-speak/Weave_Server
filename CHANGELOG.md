@@ -7,6 +7,25 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.22] - 2026-08-31
+
+### Security
+- **An invite link could be made to point somewhere else.** The invite page builds a
+  `weave://` link containing this server's address, and that address is where the person
+  clicking it connects and types their password. It was taken from the `X-Forwarded-Host`
+  header — which a proxy sets honestly, but which anybody able to reach the server directly
+  can simply send themselves. The page would then look entirely correct and point at
+  somewhere it should not, hosted by the very server the invitee had been told to trust.
+
+  The header is no longer used. Where a server sits behind a proxy or a tunnel, set the new
+  `WEAVE_PUBLIC_URL` to its outside address; otherwise the address comes from the visitor's
+  own request, which is whatever they typed into their address bar and therefore cannot be
+  chosen for them by somebody else.
+
+  Anyone running behind a tunnel should set `WEAVE_PUBLIC_URL` — see
+  `docs/configuration.md`. Without it, invite links still work, but they will say whatever
+  hostname the visitor arrived on.
+
 ## [0.1.21] - 2026-08-31
 
 ### Changed
