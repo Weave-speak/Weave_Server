@@ -55,7 +55,7 @@ export function resolveSession(db, token) {
 
     const row = db.prepare(`
         SELECT s.token_hash, s.user_id, s.kind, s.expires_at,
-               u.username, u.display_name, u.avatar, u.status, u.is_admin, u.is_disabled
+               u.username, u.display_name, u.avatar, u.status, u.is_admin, u.is_tester, u.is_disabled
         FROM sessions s
         JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = ?
@@ -82,6 +82,7 @@ export function resolveSession(db, token) {
         avatar: row.avatar,
         status: row.status,
         isAdmin: row.is_admin === 1,
+        isTester: row.is_tester === 1,
     };
 }
 

@@ -7,6 +7,15 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.25] - 2026-09-01
+
+### Added
+- **A "tester" flag, granted and revoked from user management.** It is an ordinary account
+  with one thing switched on — the in-app stream-quality reporting controls — and it is kept
+  separate from administrator on purpose, so you can hand someone the diagnostics without
+  handing them the keys to the server. It defaults off for every existing account, so nothing
+  changes for anyone until you grant it.
+
 ## [0.1.24] - 2026-09-01
 
 ### Added

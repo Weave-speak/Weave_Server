@@ -260,6 +260,38 @@ test('clearing a channel empties its history for everyone, admins only', async (
     assert.equal(history.body.messages.length, 0);
 });
 
+test('tester is a flag admins can grant and revoke, and it reaches the account itself', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+
+    // A fresh account is not a tester, and the flag it was handed at registration says so.
+    assert.equal(kes.user.isTester, false, 'registration carries the flag, defaulting off');
+    const before = await h.call('GET', '/api/admin/members', { token: h.adminToken });
+    assert.equal(before.body.members.find((m) => m.username === 'kestrel').isTester, false);
+
+    // Grant it.
+    const grant = await h.call('POST', `/api/admin/members/${kes.user.id}/tester`, {
+        token: h.adminToken, body: { isTester: true },
+    });
+    assert.equal(grant.status, 200, JSON.stringify(grant.body));
+    const after = await h.call('GET', '/api/admin/members', { token: h.adminToken });
+    assert.equal(after.body.members.find((m) => m.username === 'kestrel').isTester, true);
+
+    // It reaches the account's OWN view — which is what the client gates the reporting
+    // controls on. Without this the buttons would never appear, grant or no grant.
+    const me = await h.call('GET', '/api/me', { token: kes.token });
+    assert.equal(me.body.user.isTester, true);
+
+    // And revoke it again.
+    const revoke = await h.call('POST', `/api/admin/members/${kes.user.id}/tester`, {
+        token: h.adminToken, body: { isTester: false },
+    });
+    assert.equal(revoke.status, 200);
+    const meAgain = await h.call('GET', '/api/me', { token: kes.token });
+    assert.equal(meAgain.body.user.isTester, false);
+});
+
 test('the wipe: one exact confirmation, then everything is gone and setup re-arms', async (t) => {
     const h = await launch();
     t.after(() => h.stop());

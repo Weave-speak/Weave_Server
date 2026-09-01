@@ -145,10 +145,10 @@ export function validateDisplayName(name) {
 // rather than "this field was never selected".
 const PUBLIC_COLUMNS = `
     id, username, display_name AS displayName, avatar, status,
-    is_admin AS isAdmin, created_at AS createdAt, last_seen_at AS lastSeenAt
+    is_admin AS isAdmin, is_tester AS isTester, created_at AS createdAt, last_seen_at AS lastSeenAt
 `;
 
-const toUser = (row) => (row ? { ...row, isAdmin: row.isAdmin === 1 } : null);
+const toUser = (row) => (row ? { ...row, isAdmin: row.isAdmin === 1, isTester: row.isTester === 1 } : null);
 
 export async function createUser(db, {
     username, displayName, password, recoveryPhrase,

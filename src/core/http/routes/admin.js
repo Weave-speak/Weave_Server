@@ -363,6 +363,18 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
         json(200, { ok: true });
     }, { maxBytes: 1_000 });
 
+    admin('POST', '/api/admin/members/:id/tester', ({ params, body, session, json }) => {
+        const user = getUserById(db, params.id);
+        if (!user) throw new HttpError(404, 'No such user.');
+
+        // No self-lockout guard like the admin route has: losing your own tester flag only
+        // hides some diagnostic buttons, it does not lock anyone out of anything.
+        const makeTester = body?.isTester === true;
+        db.prepare('UPDATE users SET is_tester = ? WHERE id = ?').run(makeTester ? 1 : 0, user.id);
+        audit(session, makeTester ? 'TESTER_GRANTED' : 'TESTER_REVOKED', user.username);
+        json(200, { ok: true });
+    }, { maxBytes: 1_000 });
+
     // ── audit log ────────────────────────────────────────────────────────────
     admin('GET', '/api/admin/audit', ({ query, json }) => {
         const limit = Math.min(500, Math.max(1, Number(query.limit) || 100));

@@ -68,6 +68,10 @@ export function registerAuthRoutes({ router, db, log, auth, setup, settings }) {
             // second before /api/me lands.
             status: user.status ?? 'online',
             isAdmin: user.isAdmin,
+            // Whether this account sees the stream-quality reporting controls. Carried on
+            // the first response so the room can decide about them on the first paint,
+            // rather than briefly showing or hiding them until /api/me lands.
+            isTester: user.isTester,
         },
     });
 
