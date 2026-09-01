@@ -75,6 +75,14 @@ test('diagnostics land on disk, before and after sign-in', async (t) => {
     assert.ok(reports.some((r) => r.from === null), 'the anonymous report stays anonymous');
     assert.ok(reports.some((r) => r.from?.username === 'admin'), 'the signed-in report is attributed');
 
+    // The server stamps its own load onto every report — the "is it the Pi?" signal neither
+    // endpoint of a call can measure. Present and numeric even on a quiet test machine, where
+    // loadavg may legitimately read 0 (Windows) — a number is the contract, not a threshold.
+    assert.ok(reports.every((r) => r.server && typeof r.server.loadPerCore === 'number'),
+        'every report carries a server-load stamp');
+    assert.ok(reports.every((r) => typeof r.server.cpus === 'number' && r.server.cpus >= 1),
+        'the core count is always known');
+
     // A garbage token must not turn into a 401 — the report still matters more.
     const badToken = await call('POST', '/api/diagnostics', {
         token: 'not-a-real-token',

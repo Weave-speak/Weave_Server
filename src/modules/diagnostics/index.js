@@ -13,7 +13,9 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resolveSession } from '../../core/auth/index.js';
 
 /** A generous updater log; anything bigger is a file share, not a report. */
@@ -38,6 +40,36 @@ export function register(ctx) {
         label: 'Keep reports for (days)',
         help: 'Old reports are deleted automatically.',
     }, 30);
+
+    // A coarse snapshot of how hard the machine is working at the instant a report lands.
+    // This is the "is it the Pi?" half of the answer a stream report cannot get from either
+    // endpoint: a report that says the picture froze, arriving while load-per-core is over 1
+    // or the event loop is lagging, points at the box rather than at either connection.
+    //
+    // os.loadavg() counts EVERY process, so it sees the mediasoup worker's core even though
+    // this process cannot (the worker is a separate child process, invisible to
+    // process.cpuUsage here). eventLoopLagMs is this process's OWN saturation — signalling
+    // and HTTP — which is a different bottleneck, and telling the two apart is the point:
+    // one is the media core, the other is everything else the Pi does on the same chip.
+    const lag = monitorEventLoopDelay({ resolution: 20 });
+    lag.enable();
+    ctx.onUnload(() => lag.disable());
+
+    const vitals = () => {
+        const cpus = Math.max(1, os.cpus().length);
+        const [load1, load5, load15] = os.loadavg();
+        return {
+            at: new Date().toISOString(),
+            uptimeS: Math.floor(process.uptime()),
+            cpus,
+            loadavg: [load1, load5, load15].map((n) => Math.round(n * 100) / 100),
+            loadPerCore: Math.round((load1 / cpus) * 100) / 100,
+            rssMb: Math.round(process.memoryUsage().rss / 1048576),
+            memFreeMb: Math.round(os.freemem() / 1048576),
+            memTotalMb: Math.round(os.totalmem() / 1048576),
+            eventLoopLagMs: Number.isFinite(lag.mean) ? Math.round((lag.mean / 1e6) * 100) / 100 : null,
+        };
+    };
 
     const recent = new Map();
 
@@ -80,6 +112,10 @@ export function register(ctx) {
                 version: typeof body?.client?.version === 'string' ? body.client.version.slice(0, 32) : null,
                 target: typeof body?.client?.target === 'string' ? body.client.target.slice(0, 32) : null,
             },
+            // The machine's own load at receipt — added by the server, not the client, because
+            // it is the one thing neither endpoint of a call can measure about the box between
+            // them. See vitals() above.
+            server: vitals(),
             log: logText,
         }, null, 2), { mode: 0o600 });
 

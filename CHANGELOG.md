@@ -7,6 +7,18 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.24] - 2026-09-01
+
+### Added
+- **A stream-quality report now arrives with the server's own load beside it.** When a
+  client says a screen share looked bad, the hardest thing to tell from either end has
+  always been whether the fault was the sender, the viewer, or the machine between them.
+  The server now stamps each report it receives with its load at that instant — load per
+  core, event-loop lag, memory — which is the one thing neither end of a call can measure
+  about the box in the middle. The admin overview gains the same signal live: what the
+  single media worker's core is actually doing, so a saturated media core stops being
+  invisible until somebody complains.
+
 ## [0.1.23] - 2026-09-01
 
 ### Changed
