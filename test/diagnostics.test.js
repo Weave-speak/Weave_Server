@@ -113,3 +113,24 @@ test('the defences hold: empty, oversized, and repeat posts are refused', async 
     }
     assert.notEqual(refusedAt, null, 'the rate limit never engaged');
 });
+
+test('a signed-in account is not held to the strict anonymous limit', async (t) => {
+    const { app, dir, call } = await launch();
+    t.after(() => app.stop());
+
+    const code = fs.readFileSync(path.join(dir, 'data', 'setup-token'), 'utf8').trim();
+    const admin = await call('POST', '/api/setup', {
+        body: { code, username: 'admin', password: 'a-long-enough-password' },
+    });
+    assert.equal(admin.status, 201);
+
+    // The anonymous cap is 6/hour; a tester marks moments and must not lose reports to it. Ten
+    // signed-in posts in a row — well past 6 — all land, because the per-account window is high.
+    for (let i = 0; i < 10; i++) {
+        const r = await call('POST', '/api/diagnostics', {
+            token: admin.body.token,
+            body: { kind: 'stream-bad', log: `moment ${i}` },
+        });
+        assert.equal(r.status, 202, `signed-in report ${i} was refused: ${JSON.stringify(r.body)}`);
+    }
+});

@@ -7,6 +7,15 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.27] - 2026-09-01
+
+### Changed
+- **A signed-in tester is no longer rate-limited like an anonymous reporter.** A stream-quality
+  report marks a MOMENT, not a whole stream, so even a slight lag is worth recording — and the
+  six-per-hour cap that guards the anonymous endpoint would have thrown most of them away. A
+  signed-in account now has its own generous per-account window; the strict per-address limit
+  stays for posts with no token.
+
 ## [0.1.26] - 2026-09-01
 
 ### Fixed

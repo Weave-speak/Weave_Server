@@ -41,6 +41,14 @@ export function register(ctx) {
         help: 'Old reports are deleted automatically.',
     }, 30);
 
+    ctx.settings.define('signedInPerHour', {
+        type: 'number', integer: true, min: 1, max: 100000,
+        label: 'Reports accepted per signed-in account per hour',
+        help: 'A tester reports a MOMENT, not a whole stream, and even a slight lag is worth '
+            + 'recording — so this is deliberately high, a runaway-loop backstop rather than a '
+            + 'quota. The strict per-address limit above governs anonymous posts only.',
+    }, 600);
+
     // A coarse snapshot of how hard the machine is working at the instant a report lands.
     // This is the "is it the Pi?" half of the answer a stream report cannot get from either
     // endpoint: a report that says the picture froze, arriving while load-per-core is over 1
@@ -71,20 +79,36 @@ export function register(ctx) {
         };
     };
 
-    const recent = new Map();
+    // Two windows, because WHO is reporting decides how freely they may. Anonymous posts stay
+    // on the strict per-ADDRESS limit — that is the abusable case. A signed-in tester, marking
+    // a moment rather than a whole stream, is exactly who this endpoint is for now, so they get
+    // a per-ACCOUNT window set high enough never to lose a real report.
+    const recent = new Map();       // ip -> timestamps (anonymous)
+    const recentAuth = new Map();   // userId -> timestamps (signed in)
 
-    const allow = (ip) => {
+    const allow = (map, key, limit) => {
         const now = Date.now();
-        const seen = (recent.get(ip) ?? []).filter((t) => now - t < WINDOW_MS);
-        if (seen.length >= ctx.settings.get('perHour')) { recent.set(ip, seen); return false; }
+        const seen = (map.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
+        if (seen.length >= limit) { map.set(key, seen); return false; }
         seen.push(now);
-        recent.set(ip, seen);
+        map.set(key, seen);
         return true;
     };
 
     ctx.http.route('POST', '/api/diagnostics', ({ req, body, ip, json, log }) => {
-        if (!allow(ip)) {
-            return json(429, { error: 'rate_limited', message: 'Too many reports from this address. Try later.' });
+        // Attribution is soft: a valid token names the account, its absence is fine. The route
+        // itself is auth 'none', so this cannot lock out the client that most needs it — one
+        // whose update failed before sign-in. It is resolved FIRST because it also chooses the
+        // rate limit: a signed-in tester is trusted to report often, an anonymous poster is not.
+        const header = req.headers.authorization ?? '';
+        const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+        const session = bearer ? resolveSession(ctx.db.handle, bearer) : null;
+
+        const permitted = session
+            ? allow(recentAuth, session.userId, ctx.settings.get('signedInPerHour'))
+            : allow(recent, ip, ctx.settings.get('perHour'));
+        if (!permitted) {
+            return json(429, { error: 'rate_limited', message: 'Too many reports just now. Try again shortly.' });
         }
 
         const kind = typeof body?.kind === 'string' ? body.kind.slice(0, MAX_KIND) : 'report';
@@ -95,13 +119,6 @@ export function register(ctx) {
         if (Buffer.byteLength(logText, 'utf8') > MAX_LOG_BYTES) {
             return json(413, { error: 'too_large', message: 'Reports are limited to 256 KB.' });
         }
-
-        // Attribution is soft: a valid token names the account, its absence is fine. The
-        // route itself is auth 'none', so this cannot lock out the client that most needs
-        // it — one whose update failed before sign-in.
-        const header = req.headers.authorization ?? '';
-        const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
-        const session = bearer ? resolveSession(ctx.db.handle, bearer) : null;
 
         const name = `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(4).toString('hex')}.json`;
         fs.writeFileSync(path.join(dir, name), JSON.stringify({
