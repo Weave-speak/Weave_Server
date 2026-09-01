@@ -489,6 +489,15 @@ export function registerCoreWsHandlers({
         const target = peers.get(msg.cid);
         if (!target) return fail(ws, 'no_peer', 'That person is no longer connected.');
 
+        // You never receive your own stream. A streamer who consumed their own screen-audio
+        // would hear their share played back — and because that capture is the machine's
+        // whole output mix, it would feed straight into a loop that re-captures what it just
+        // played. producer_new already excludes the sender, so nothing SHOULD ask for this;
+        // the guard is here because the server is the authority on it, not the client.
+        if (target.cid === peer.cid) {
+            return fail(ws, 'self_consume', 'You cannot receive your own stream.');
+        }
+
         // The isolation check. Without it, a forged cid lets someone consume media from a
         // channel they are not in.
         if (target.channelId !== peer.channelId) {

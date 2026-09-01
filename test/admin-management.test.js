@@ -292,6 +292,24 @@ test('tester is a flag admins can grant and revoke, and it reaches the account i
     assert.equal(meAgain.body.user.isTester, false);
 });
 
+test('a role change is pushed to the account\'s live sessions, so the client re-gates in place', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const live = await h.connect(kes.token);
+
+    // Granting tester while they are connected must reach that socket -- without this the
+    // stream-quality buttons stay hidden until a re-login, which is the bug this fixes.
+    const grant = await h.call('POST', `/api/admin/members/${kes.user.id}/tester`, {
+        token: h.adminToken, body: { isTester: true },
+    });
+    assert.equal(grant.status, 200);
+
+    const evt = await live.expect('roles_changed');
+    assert.equal(evt.isTester, true);
+    assert.equal(evt.isAdmin, false, 'the push carries the whole role set, not just the one changed');
+});
+
 test('the wipe: one exact confirmation, then everything is gone and setup re-arms', async (t) => {
     const h = await launch();
     t.after(() => h.stop());

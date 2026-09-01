@@ -71,6 +71,20 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
         }
         return kicked;
     };
+
+    /**
+     * Tell an account's live sessions their roles changed, so the client re-gates in place
+     * rather than showing stale buttons until the next sign-in. Best effort: a socket on its
+     * way out simply misses it and re-reads its roles when it signs in again.
+     */
+    const notifyRoles = (userId) => {
+        const u = getUserById(db, userId);
+        if (!u) return;
+        for (const peer of peers?.forUser?.(userId) ?? []) {
+            try { ws.send(peer.ws, 'roles_changed', { isAdmin: u.isAdmin, isTester: u.isTester }); }
+            catch { /* the socket is going; it re-reads on reconnect */ }
+        }
+    };
     const admin = (method, path, handler, opts = {}) =>
         router.register('core', method, path, handler, { ...opts, auth: 'admin' });
 
@@ -360,6 +374,7 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
 
         db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(makeAdmin ? 1 : 0, user.id);
         audit(session, makeAdmin ? 'ADMIN_GRANTED' : 'ADMIN_REVOKED', user.username);
+        notifyRoles(user.id);
         json(200, { ok: true });
     }, { maxBytes: 1_000 });
 
@@ -372,6 +387,7 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
         const makeTester = body?.isTester === true;
         db.prepare('UPDATE users SET is_tester = ? WHERE id = ?').run(makeTester ? 1 : 0, user.id);
         audit(session, makeTester ? 'TESTER_GRANTED' : 'TESTER_REVOKED', user.username);
+        notifyRoles(user.id);
         json(200, { ok: true });
     }, { maxBytes: 1_000 });
 

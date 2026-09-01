@@ -7,6 +7,20 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.26] - 2026-09-01
+
+### Fixed
+- **You can no longer receive your own stream.** The server refused nothing when a peer asked
+  to consume its own producer, so a streamer could end up subscribed to their own
+  screen-audio — hearing their share played back, and, because that capture is the machine's
+  whole output mix, feeding a loop that re-captured what it had just played. It is refused
+  outright now, whatever a client asks for.
+
+### Changed
+- **A tester or administrator grant now reaches the account immediately.** Granting or
+  removing a role tells that account's live sessions, so the controls it unlocks appear or
+  vanish in place rather than waiting for the next sign-in.
+
 ## [0.1.25] - 2026-09-01
 
 ### Added

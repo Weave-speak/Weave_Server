@@ -335,6 +335,22 @@ test('consuming across channels is refused, not trusted', async (t) => {
     assert.equal((await a.expect('error')).code, 'wrong_channel');
 });
 
+test('a peer cannot consume its own stream', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const a = await h.connect();
+    const joined = await join(a, h.adminToken);
+    await a.send('createTransport', { direction: 'recv' });
+    await a.expect('transportCreated');
+
+    // Asking to consume your OWN cid is refused outright, before any producer lookup: hearing
+    // your own share played back is a feedback loop, and a screen-audio capture that re-plays
+    // itself feeds what it just captured. The server owns this, whatever a client asks for.
+    a.send('consume', { cid: joined.self.cid, slot: 'audio', rtpCapabilities: { codecs: [], headerExtensions: [] } });
+    assert.equal((await a.expect('error')).code, 'self_consume');
+});
+
 test('a channel that forbids voice refuses a voice producer server-side', async (t) => {
     const h = await launch();
     t.after(h.cleanup);
