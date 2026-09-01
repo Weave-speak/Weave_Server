@@ -7,6 +7,31 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.23] - 2026-09-01
+
+### Changed
+- **Voice is carried at 96 kb/s now, rather than at whatever the browser picks.** Left to
+  itself a browser settles around 32 kb/s, which is where Opus starts discarding the top
+  octave of speech — most of what people mean by "muffled", and a good part of what they
+  mean by "I can barely hear them".
+
+  0.1.18 made this a switch and shipped it off, on purpose: four client releases in a row
+  had tried to improve voice quality by reasoning about it and each made something worse,
+  so an unproven number belonged behind something an operator could turn on and listen to
+  rather than baked into a release. It is on now for a different reason than the one that
+  turned it off. 96 kb/s is not a fresh guess — it is what the Weave web app has run on for
+  months against the same kind of SFU and the same codec, and that is the client people
+  point at when they say voice sounds better over there.
+
+  None of this is less reversible than it was. `WEAVE_OPUS_BITRATE=64000` and a restart
+  suits a thinner uplink, clearing it entirely hands the decision back to the browser, and
+  either takes effect for everybody without a single client updating: the router's codec
+  parameters are what configure a browser's encoder.
+
+  The router still declares nothing else about anyone's encoder. Silence suppression and
+  playback rate stay the client's own business, set per stream by whoever chose them,
+  because a router parameter reaches people who never asked for it.
+
 ## [0.1.22] - 2026-08-31
 
 ### Security

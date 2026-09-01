@@ -55,15 +55,19 @@ export function mediaCodecs({ opusBitrate = null } = {}) {
                 // more to a conversation than bitrate does, and it costs no round trip.
                 useinbandfec: 1,
                 minptime: 10,
-                // The bitrate, ONLY if an operator asked for one. Default is unset, which
-                // is what shipped for every version people described as sounding fine.
+                // The bitrate. This shipped OFF for a while, because four releases in a
+                // row had tried to improve this audio path by reasoning and each made
+                // something worse, and an unproven number belongs behind a switch.
                 //
-                // It is worth having -- without it Chromium settles around 32 kb/s mono,
-                // where speech starts losing its top octave -- but four releases in a row
-                // tried to improve this audio path by reasoning and each made something
-                // worse. So it ships OFF and becomes a thing somebody turns on and
-                // listens to: WEAVE_OPUS_BITRATE=64000 and a restart, no rebuild, and
-                // trivially reversible if it sounds wrong.
+                // It is on now at 96 kb/s, and the reason is evidence rather than a fifth
+                // theory: the Weave web app has run at exactly this value for months and
+                // is the thing people compare us to when they say voice sounds better
+                // over there. Without it Chromium settles around 32 kb/s mono, where
+                // speech starts losing its top octave.
+                //
+                // Still one environment variable away from any other value, and still
+                // reversible in a restart: WEAVE_OPUS_BITRATE=64000 for a thin uplink,
+                // and no rebuild or client update either way.
                 //
                 // NOT declared alongside it, deliberately:
                 //   maxplaybackrate -- pinning fullband stops Opus narrowing its own

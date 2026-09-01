@@ -93,15 +93,17 @@ removes the question entirely.
 
 ### `WEAVE_OPUS_BITRATE`
 
-Defaults to `64000` — what a default Discord voice channel uses. `96000` to `128000` is
-audibly better and worth it on any decent uplink.
+Defaults to `96000`, which is what the Weave web app has run on for months. `64000` matches
+a default Discord voice channel and is the figure to drop to if your uplink is thin;
+`128000` is about the point past which nobody can hear the difference on speech. Clearing it
+entirely hands the decision back to the browser.
 
 This is the single highest-leverage setting on the server, and the reason is not obvious:
 mediasoup-client builds the answer that configures a browser's **encoder** from the
 parameters the *router* publishes, not from anything the client sends. So this figure
 reaches every client, including ones too old to know the setting exists. A client that
 does send its own preference overrides it per stream, which is how a screen share's audio
-gets 128 kb/s while voice stays at 64.
+gets 256 kb/s while voice stays at 96.
 
 With nothing declared at all, browsers fall back to roughly 32 kb/s — the point where Opus
 starts discarding the top octave of speech. That is most of what "muffled" means.

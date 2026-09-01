@@ -127,25 +127,29 @@ async function launch(extraEnv = {}) {
 const opusOf = (caps) => caps.codecs.find((c) => c.mimeType.toLowerCase() === 'audio/opus');
 const videoOf = (caps) => caps.codecs.filter((c) => c.kind === 'video' && !/rtx/i.test(c.mimeType));
 
-test('the router leaves the voice encoder alone unless asked', () => {
-    // Deliberately minimal, and the result of four releases that each tried to improve
-    // this path by reasoning and each made something worse. FEC costs no round trip and
-    // stays; everything else is the browser's choice again, which is what shipped for
-    // every version people described as sounding fine.
-    const opus = mediaCodecs().find((c) => c.mimeType === 'audio/opus');
+test('the router declares a bitrate and FEC, and nothing else about the encoder', () => {
+    // maxplaybackrate and usedtx were declared here once and removed again, because router
+    // parameters reach every connected client including ones that never asked for them.
+    // They stay gone — the client sets both per producer now, where they only affect the
+    // person who chose them. The bitrate is a different case: it is the difference between
+    // 96 kb/s and Chromium's own ~32 kb/s, and 96 is what the Weave web app has run on for
+    // months rather than a number somebody reasoned their way to.
+    const opus = mediaCodecs({ opusBitrate: 96_000 }).find((c) => c.mimeType === 'audio/opus');
     assert.equal(opus.parameters.useinbandfec, 1, 'a packet rebuilt from the next one');
-    assert.equal(opus.parameters.maxaveragebitrate, undefined, 'unset unless an operator asks');
-    assert.equal(opus.parameters.maxplaybackrate, undefined, 'let Opus narrow its own bandwidth');
-    assert.equal(opus.parameters.usedtx, undefined, 'let the client decide');
+    assert.equal(opus.parameters.maxaveragebitrate, 96_000);
+    assert.equal(opus.parameters.maxplaybackrate, undefined, 'the client decides, for itself');
+    assert.equal(opus.parameters.usedtx, undefined, 'likewise');
     assert.equal(opus.channels, 2, 'stereo stays available for a screen share to ask for');
 });
 
-test('setting a bitrate is one environment variable, and reaches every client', () => {
-    // The A/B test an operator can actually run: change it, restart, listen. No rebuild,
-    // no client release, and it reaches clients too old to ask for it because the router
-    // parameters are what configure a browser's encoder.
-    const opus = mediaCodecs({ opusBitrate: 96_000 }).find((c) => c.mimeType === 'audio/opus');
-    assert.equal(opus.parameters.maxaveragebitrate, 96_000);
+test('an operator who clears the bitrate gets the browser default back', () => {
+    // Reversibility in both directions is the point of keeping this in the environment:
+    // change it, restart, listen. Turning it off has to keep working, or the default stops
+    // being a setting and becomes a decision baked into a release — which is the exact
+    // shape of the mistake this path is scarred by.
+    const opus = mediaCodecs().find((c) => c.mimeType === 'audio/opus');
+    assert.equal(opus.parameters.maxaveragebitrate, undefined);
+    assert.equal(opus.parameters.useinbandfec, 1, "FEC is not the operator's to lose");
 });
 
 
