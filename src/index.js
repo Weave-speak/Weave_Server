@@ -84,6 +84,13 @@ export async function start(env = process.env) {
         log,
         config,
         onDisconnect: (sock) => {
+            // A socket that was SUPERSEDED closed because the same client came back on a
+            // new one, and the peer moved with it. Tearing it down here would close the
+            // transports the reconnection just saved and tell the room somebody left who
+            // is standing right there — so the peer is only removed by the socket that
+            // still holds it.
+            const standing = peers.get(sock.cid);
+            if (!standing || standing.ws !== sock) return;
             const peer = peers.remove(sock.cid);
             if (!peer) return;
             // Closing the transports above stops the media; this tells EVERYONE — every

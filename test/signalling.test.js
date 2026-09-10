@@ -51,6 +51,8 @@ function client(url) {
             });
         },
         close: () => ws.close(),
+        /** Everything received and not yet awaited, for asserting that nothing happened. */
+        get inbox() { return inbox; },
     };
 }
 
@@ -502,4 +504,103 @@ test('the heartbeat carries how long that machine has been untouched', async (t)
     }
     assert.equal(peer().idleMs, 42_000, 'the last good value stands');
     assert.equal(peer().idleReportedAt, before);
+});
+
+/** Come back on a new socket claiming the peer an old one was standing as. */
+async function resume(h, token, channelId, key) {
+    const c = await h.connect();
+    await c.expect('hello');
+    c.send('join', { token, channelId, protocol: { min: 1, max: 1 }, resume: key });
+    return { c, joined: await c.expect('joined') };
+}
+
+test('a reconnection claims the peer it was, rather than standing up a second one', async (t) => {
+    // The bug this closes: a client whose line dropped came back as a NEW peer, so the
+    // server held two for one account — one of them a zombie with the room's transports,
+    // reaped a minute later as a departure. Meanwhile the client, told it had joined,
+    // rebuilt its media from nothing and stopped whatever it was sharing.
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const c = await h.connect();
+    const first = await join(c, h.adminToken, h.channels[0].id);
+    assert.ok(first.resumeKey, 'a joined frame says how to come back');
+
+    c.send('createTransport', { direction: 'recv' });
+    const transport = await c.expect('transportCreated');
+
+    // The client gave up on that socket a minute ago. The server cannot know — no close
+    // frame ever reached it — which is exactly the state the logs were full of.
+    const { c: back, joined } = await resume(h, h.adminToken, h.channels[0].id, first.resumeKey);
+
+    assert.equal(joined.resumed, true);
+    assert.equal(joined.self.cid, first.self.cid, 'the same peer, under the same name');
+    assert.equal(h.app.peers.count, 1, 'and not a second one beside it');
+
+    // The proof that the media survived: the transport built on the OLD socket is still
+    // there to be repaired in place. A rebuilt peer answers 'no_transport' here.
+    back.send('restartIce', { direction: 'recv' });
+    assert.equal((await back.expect('iceRestarted')).id, transport.id);
+
+    // The socket that was replaced goes at once rather than lingering as a peer nobody
+    // is driving until the heartbeat sweep gets to it.
+    const code = await new Promise((res) => c.ws.once('close', res));
+    assert.equal(code, 4002);
+
+    assert.notEqual(joined.resumeKey, first.resumeKey, 'and the spent key is not reusable');
+});
+
+test('a key that is spent, borrowed or for another room all mean a fresh join', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const c = await h.connect();
+    const first = await join(c, h.adminToken, h.channels[0].id);
+
+    // Somebody else's key claims nothing, however genuine it is.
+    const memberToken = await h.makeMember('sinister');
+    const stranger = await resume(h, memberToken, h.channels[0].id, first.resumeKey);
+    assert.equal(stranger.joined.resumed, undefined);
+    assert.notEqual(stranger.joined.self.cid, first.self.cid);
+
+    // A key for a peer standing somewhere else falls through too: resuming into the wrong
+    // room would be a move dressed up as a reconnection.
+    const other = h.channels.find((x) => x.id !== h.channels[0].id && x.kind !== 'text');
+    if (other) {
+        const elsewhere = await resume(h, h.adminToken, other.id, first.resumeKey);
+        assert.equal(elsewhere.joined.resumed, undefined);
+    }
+
+    // And a key nobody issued is simply not a key.
+    const nonsense = await resume(h, h.adminToken, h.channels[0].id, 'not-a-real-key');
+    assert.equal(nonsense.joined.resumed, undefined);
+});
+
+test('a resume tells the room nothing, because nothing happened', async (t) => {
+    // Every reconnection used to cost everyone else an arrival — and, a minute later when
+    // the abandoned socket was reaped, a departure. That is the join and leave sound
+    // people were hearing all evening, and the roster churn behind it.
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const watcher = await h.connect();
+    await join(watcher, h.adminToken, h.channels[0].id);
+
+    const memberToken = await h.makeMember('chris');
+    const chris = await h.connect();
+    const first = await join(chris, memberToken, h.channels[0].id);
+    assert.equal((await watcher.expect('peer_joined')).peer.username, 'chris');
+
+    const { joined } = await resume(h, memberToken, h.channels[0].id, first.resumeKey);
+    assert.equal(joined.resumed, true);
+    await new Promise((res) => chris.ws.once('close', res));
+
+    // Two round trips, so anything the resume was going to broadcast has had every chance
+    // to arrive before the inbox is read.
+    for (let i = 0; i < 2; i += 1) {
+        watcher.send('ping', { t: Date.now() });
+        await watcher.expect('pong');
+    }
+    const churn = watcher.inbox.filter((m) => ['peer_joined', 'peer_left', 'sounds:play'].includes(m.type));
+    assert.deepEqual(churn, [], 'nobody arrived and nobody left');
 });

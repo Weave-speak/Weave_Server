@@ -47,6 +47,9 @@ export function createWsServer({ registry, log, config, onDisconnect }) {
     function broadcast(type, payload, predicate = () => true) {
         let sent = 0;
         for (const ws of sockets) {
+            // A superseded socket still answers to its peer's cid for the moment it takes
+            // to close, so every peer-shaped predicate would happily match it twice.
+            if (ws.superseded) continue;
             if (ws.readyState === ws.OPEN && predicate(ws)) {
                 ws.send(JSON.stringify({ type, ...payload }));
                 sent += 1;

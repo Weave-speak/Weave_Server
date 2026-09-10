@@ -7,6 +7,26 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.30] - 2026-09-10
+
+### Fixed
+- **A client whose connection drops now keeps its place instead of arriving as somebody
+  new.** Every connection was a separate person as far as the server was concerned, so a few
+  seconds of bad network cost the room a join sound, a leave sound a minute later, and — for
+  anyone sharing their screen — a stopped stream, because the returning client had to build
+  its audio and video from nothing. A client can now claim back the connection it had: the
+  same standing in the room, the same microphone and screen, and nothing announced to
+  anyone, because nothing actually happened. Clients too old to ask for this are unaffected.
+
+- **The connection it replaces goes at once.** An abandoned connection used to stand in the
+  room for up to ninety seconds, until the heartbeat sweep noticed it had gone quiet — a
+  second copy of somebody who was already back, holding audio nobody could reach and filling
+  the log with warnings about a stream it would never receive.
+
+- **Join and leave sounds no longer play for somebody who never left.** An account with two
+  connections in the same room — a reconnection overlapping the one it replaced, or a phone
+  beside a desktop — is announced once, on the way in and on the way out.
+
 ## [0.1.27] - 2026-09-01
 
 ### Changed

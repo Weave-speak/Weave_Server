@@ -9,6 +9,8 @@
 // server used a single video slot and silently orphaned the first producer when a
 // second arrived — an unreachable leak that kept forwarding RTP nobody could see.
 
+import { randomBytes } from 'node:crypto';
+
 export const SLOTS = Object.freeze({
     AUDIO: 'audio',
     SCREEN: 'screen',
@@ -18,6 +20,9 @@ export const SLOTS = Object.freeze({
 
 const VALID_SLOTS = new Set(Object.values(SLOTS));
 export const isValidSlot = (slot) => VALID_SLOTS.has(slot);
+
+/** Long enough that guessing is not a strategy, short enough to sit in a JSON frame. */
+const newResumeKey = () => randomBytes(18).toString('base64url');
 
 export class PeerRegistry {
     #peers = new Map();     // cid -> peer
@@ -58,6 +63,10 @@ export class PeerRegistry {
             transports: new Map(),  // 'send' | 'recv' -> transport
             producers: new Map(),   // slot -> producer
             consumers: new Map(),   // consumerId -> consumer
+            // The bearer secret that lets a RETURNING socket claim this peer instead of
+            // building a new one. It never leaves publicView, and it is rotated on every
+            // use: a key that has been spent cannot be replayed by anything that saw it.
+            resumeKey: newResumeKey(),
         };
         this.#peers.set(ws.cid, peer);
         return peer;
@@ -65,6 +74,36 @@ export class PeerRegistry {
 
     get(cid) {
         return this.#peers.get(cid);
+    }
+
+    /**
+     * The peer this resume key belongs to, if it is still standing.
+     *
+     * The account is checked as well as the key. A key is a bearer secret, and without
+     * this a leaked one would be an account takeover rather than a reconnection.
+     */
+    claim(key, userId) {
+        if (!key || typeof key !== 'string') return null;
+        for (const peer of this.#peers.values()) {
+            if (peer.resumeKey === key && peer.userId === userId) return peer;
+        }
+        return null;
+    }
+
+    /**
+     * Move a standing peer onto a new socket.
+     *
+     * The cid deliberately does NOT change. It is the name every other client's roster
+     * uses, the name in every consumer's appData, and the name this client knows itself
+     * by — so keeping it is what makes a reconnection invisible to the room rather than a
+     * departure and an arrival. The transports, producers and consumers are untouched:
+     * they are ICE/DTLS over UDP and never depended on the socket that asked for them.
+     */
+    rebind(peer, ws) {
+        ws.cid = peer.cid;
+        peer.ws = ws;
+        peer.resumeKey = newResumeKey();
+        return peer.resumeKey;
     }
 
     /**

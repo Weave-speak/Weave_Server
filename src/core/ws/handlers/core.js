@@ -40,6 +40,16 @@ export const LEAVE_CLOSE_CODE = 4000;
 export const KICK_CLOSE_CODE = 4006;
 
 /**
+ * This socket has been replaced by a newer one carrying the same resume key.
+ *
+ * Deliberately not an error and deliberately not 4003-4006: nothing is wrong, nothing was
+ * revoked, and the client that opened the replacement has already stopped listening to
+ * this one. It exists so the socket goes away at once rather than waiting out the
+ * heartbeat sweep as a peer nobody is driving.
+ */
+export const SUPERSEDED_CLOSE_CODE = 4002;
+
+/**
  * The longest a timed server mute may run: a week.
  *
  * Not a policy, a typo guard. "Until an administrator lifts it" is already available by
@@ -125,6 +135,49 @@ export function registerCoreWsHandlers({
             return fail(ws, 'no_channels', 'This server has no channels configured.');
         }
 
+        // A RESUME: the same client returning to a peer it never meant to leave.
+        //
+        // A dropped socket is not a departure. The transports under it are ICE/DTLS over
+        // UDP and are still standing, so handing them to the returning socket costs
+        // nothing and saves everything — no rebuild, no producer_closed, no arrival for
+        // the room to hear. Offered only where the peer still stands exactly where this
+        // client expects it to; anywhere else, a fresh join is the honest answer.
+        const prior = peers.claim(msg.resume, session.userId);
+        if (prior && prior.channelId === (channel?.id ?? null)) {
+            const outgoing = prior.ws;
+            // Marked, and only then replaced. Nothing broadcast in the moment between
+            // should go down a socket we have already given up on, and the peer must
+            // belong to its NEW socket before the old one's close arrives — a close read
+            // as a departure would tear down the very transports this is saving.
+            outgoing.superseded = true;
+            ws.session = session;
+            const resumeKey = peers.rebind(prior, ws);
+            try { outgoing.close(SUPERSEDED_CLOSE_CODE, 'resumed on another socket'); } catch { /* going anyway */ }
+
+            touchLastSeen(db, session.userId);
+
+            ws.log = log.child({ cid: ws.cid, user: session.username });
+            ws.log.info({ evt: 'peer.resumed', channel: channel?.name ?? '(nowhere)' },
+                `${session.username} resumed in ${channel ? channel.name : 'no room'}`);
+
+            send('joined', {
+                protocol,
+                resumed: true,
+                resumeKey,
+                self: PeerRegistry.publicView(prior),
+                channel,
+                peers: snapshotFor(db, peers.snapshot(ws.cid), session.userId),
+                ...(channel ? { rtpCapabilities: sfu.rtpCapabilities(channel.id) } : {}),
+            });
+
+            // Deliberately no announcePeer: from every other screen nothing happened, which
+            // is the whole point. The hook still fires, carrying the truth, so a module that
+            // stamps activity keeps working and one that announces arrivals can tell the
+            // difference between a person walking in and a line coming back.
+            hooks.emit(HOOKS.PEER_JOIN, { peer: prior, channel, resumed: true });
+            return;
+        }
+
         ws.session = session;
         const peer = peers.add(ws, session, channel?.id ?? null, protocol);
         touchLastSeen(db, session.userId);
@@ -144,6 +197,9 @@ export function registerCoreWsHandlers({
 
         send('joined', {
             protocol,
+            // What a reconnecting socket presents to claim this peer back rather than
+            // building a second one beside it.
+            resumeKey: peer.resumeKey,
             self: PeerRegistry.publicView(peer),
             channel,
             // The WHOLE roster, not one room's: the sidebar shows who is standing where

@@ -175,6 +175,17 @@ export function register(ctx) {
     const choice = db.prepare('SELECT join_sound AS joinSound, leave_sound AS leaveSound FROM sound_choices WHERE user_id = ?');
 
     /**
+     * Whether this account has another connection standing in the same room.
+     *
+     * The one thing a sound must never do is describe something that did not happen. An
+     * account is allowed two connections — a desktop and a phone, or a reconnection
+     * overlapping the socket it replaced — and in every one of those cases the person
+     * neither arrived nor left, so nothing should be heard.
+     */
+    const elsewhereInRoom = (peer) => ctx.peers.forUser(peer.userId)
+        .some((other) => other.cid !== peer.cid && other.channelId === peer.channelId);
+
+    /**
      * Tell a channel to play a sound.
      *
      * The server sends an id, never audio: the sound is fetched and cached by the client
@@ -183,6 +194,7 @@ export function register(ctx) {
      */
     const announce = (peer, which) => {
         if (!ctx.settings.get('enabled')) return;
+        if (elsewhereInRoom(peer)) return;
 
         const row = choice.get(peer.userId);
         const personal = which === 'join' ? row?.joinSound : row?.leaveSound;
@@ -197,7 +209,9 @@ export function register(ctx) {
             });
     };
 
-    ctx.hooks.on(HOOKS.PEER_JOIN, ({ peer }) => announce(peer, 'join'));
+    // A resume is a line coming back, not a person walking in. Announcing it is exactly
+    // the noise that made a flaky connection sound like somebody pacing in and out.
+    ctx.hooks.on(HOOKS.PEER_JOIN, ({ peer, resumed }) => { if (!resumed) announce(peer, 'join'); });
     ctx.hooks.on(HOOKS.PEER_LEAVE, ({ peer }) => announce(peer, 'leave'));
 
     ctx.admin.panel({ id: 'sounds', label: 'Join and leave sounds', order: 50 });
