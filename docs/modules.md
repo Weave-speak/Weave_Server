@@ -16,7 +16,7 @@ module under `src/modules/<id>/`.
 System → Modules in the admin console, or:
 
 ```bash
-WEAVE_DISABLED_MODULES=personas,slash-commands
+WEAVE_DISABLED_MODULES=sounds,slash-commands
 ```
 
 Disabling unregisters a module's HTTP routes, refuses its WebSocket message types, hides
@@ -99,5 +99,5 @@ start if one changes underneath it. Add a new migration instead.
 | `uploads` | on | Image attachments, type decided by magic bytes |
 | `afk` | on | Moves idle people to an away channel. Uses keyboard and mouse idleness where the desktop client can report it, microphone silence otherwise |
 | `slash-commands` | on | `/roll`, `/flip` — their own message type, so they work without chat |
-| `personas` | **off** | Join and leave sounds. Ships with an empty library |
+| `sounds` | **off** | Join and leave sounds. Ships with an empty library |
 | `dev-smoke` | **off** | A page that proves audio flows. For verifying a deployment |

@@ -233,7 +233,7 @@ function sidebar() {
         const count = it.id === 'members' ? counts.users
             : it.id === 'rooms' ? counts.channels
                 : it.id === 'invites' ? counts.invites
-                    : it.id === 'sounds' ? counts.persona_sounds
+                    : it.id === 'sounds' ? counts.sounds
                         : null;
         return `
             <button class="nav-item ${view === it.id ? 'active' : ''}" data-go="#/${it.id}">
@@ -800,7 +800,7 @@ async function loadView() {
         case 'sounds':
             // A module's screen has to cope with the module being switched off.
             try {
-                state.data = await api('/api/personas/sounds');
+                state.data = await api('/api/sounds');
             } catch {
                 state.data = { sounds: null };
             }

@@ -64,9 +64,9 @@ export function register(ctx) {
     }, '');
 
     // ── the library ──────────────────────────────────────────────────────────
-    ctx.http.route('GET', '/api/personas/sounds', ({ json }) => {
+    ctx.http.route('GET', '/api/sounds', ({ json }) => {
         json(200, {
-            sounds: db.prepare('SELECT id, name, mime, bytes FROM persona_sounds ORDER BY name').all(),
+            sounds: db.prepare('SELECT id, name, mime, bytes FROM sounds ORDER BY name').all(),
             defaults: {
                 joinSound: ctx.settings.get('defaultJoinSound') || null,
                 leaveSound: ctx.settings.get('defaultLeaveSound') || null,
@@ -74,8 +74,8 @@ export function register(ctx) {
         });
     });
 
-    ctx.http.route('POST', '/api/personas/sounds', ({ body, query, session, json, log }) => {
-        const count = db.prepare('SELECT COUNT(*) AS n FROM persona_sounds').get().n;
+    ctx.http.route('POST', '/api/sounds', ({ body, query, session, json, log }) => {
+        const count = db.prepare('SELECT COUNT(*) AS n FROM sounds').get().n;
         if (count >= MAX_SOUNDS) {
             throw new HttpError(409, `This server already has the maximum of ${MAX_SOUNDS} sounds.`);
         }
@@ -89,23 +89,23 @@ export function register(ctx) {
         fs.writeFileSync(path.join(dir, `${id}.${kind.ext}`), buffer);
 
         db.prepare(`
-            INSERT INTO persona_sounds (id, name, extension, mime, bytes, uploaded_by, created_at)
+            INSERT INTO sounds (id, name, extension, mime, bytes, uploaded_by, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(id, name, kind.ext, kind.mime, buffer.length, session.userId, Date.now());
 
-        log.info({ evt: 'persona.sound_added', name }, `${session.username} added the sound "${name}"`);
+        log.info({ evt: 'sound.added', name }, `${session.username} added the sound "${name}"`);
         json(201, { id, name, mime: kind.mime, bytes: buffer.length });
     }, { auth: 'admin', rawBody: true, maxBytes: MAX_BYTES });
 
-    ctx.http.route('DELETE', '/api/personas/sounds/:id', ({ params, json }) => {
-        const row = db.prepare('SELECT extension FROM persona_sounds WHERE id = ?').get(params.id);
+    ctx.http.route('DELETE', '/api/sounds/:id', ({ params, json }) => {
+        const row = db.prepare('SELECT extension FROM sounds WHERE id = ?').get(params.id);
         if (!row) throw new HttpError(404, 'No such sound.');
 
         try { fs.unlinkSync(path.join(dir, `${params.id}.${row.extension}`)); } catch { /* already gone */ }
-        db.prepare('DELETE FROM persona_sounds WHERE id = ?').run(params.id);
+        db.prepare('DELETE FROM sounds WHERE id = ?').run(params.id);
         // Anyone who had chosen it falls back to silence rather than to a broken URL.
-        db.prepare('UPDATE persona_choices SET join_sound = NULL WHERE join_sound = ?').run(params.id);
-        db.prepare('UPDATE persona_choices SET leave_sound = NULL WHERE leave_sound = ?').run(params.id);
+        db.prepare('UPDATE sound_choices SET join_sound = NULL WHERE join_sound = ?').run(params.id);
+        db.prepare('UPDATE sound_choices SET leave_sound = NULL WHERE leave_sound = ?').run(params.id);
         // A deleted default is no default, not a dangling id nobody can hear.
         if (ctx.settings.get('defaultJoinSound') === params.id) ctx.settings.set('defaultJoinSound', '');
         if (ctx.settings.get('defaultLeaveSound') === params.id) ctx.settings.set('defaultLeaveSound', '');
@@ -113,18 +113,18 @@ export function register(ctx) {
         json(200, { ok: true });
     }, { auth: 'admin' });
 
-    ctx.http.route('PUT', '/api/personas/sounds/:id/default', ({ params, body, json }) => {
+    ctx.http.route('PUT', '/api/sounds/:id/default', ({ params, body, json }) => {
         const which = body?.which === 'leave' ? 'leave' : body?.which === 'join' ? 'join' : null;
         if (!which) throw new HttpError(400, 'which must be "join" or "leave".');
-        if (!db.prepare('SELECT 1 FROM persona_sounds WHERE id = ?').get(params.id)) {
+        if (!db.prepare('SELECT 1 FROM sounds WHERE id = ?').get(params.id)) {
             throw new HttpError(404, 'No such sound.');
         }
         ctx.settings.set(which === 'join' ? 'defaultJoinSound' : 'defaultLeaveSound', params.id);
         json(200, { which, soundId: params.id });
     }, { auth: 'admin' });
 
-    ctx.http.route('GET', '/api/personas/sounds/:id/audio', ({ params, res }) => {
-        const row = db.prepare('SELECT extension, mime FROM persona_sounds WHERE id = ?').get(params.id);
+    ctx.http.route('GET', '/api/sounds/:id/audio', ({ params, res }) => {
+        const row = db.prepare('SELECT extension, mime FROM sounds WHERE id = ?').get(params.id);
         if (!row) throw new HttpError(404, 'No such sound.');
 
         const file = path.resolve(dir, `${params.id}.${row.extension}`);
@@ -141,8 +141,8 @@ export function register(ctx) {
     });
 
     // ── individual choices ───────────────────────────────────────────────────
-    ctx.http.route('GET', '/api/personas/me', ({ session, json }) => {
-        const row = db.prepare('SELECT join_sound AS joinSound, leave_sound AS leaveSound FROM persona_choices WHERE user_id = ?')
+    ctx.http.route('GET', '/api/sounds/me', ({ session, json }) => {
+        const row = db.prepare('SELECT join_sound AS joinSound, leave_sound AS leaveSound FROM sound_choices WHERE user_id = ?')
             .get(session.userId);
         // No personal choice falls back to whatever an admin has set as the default,
         // rather than to null — "new accounts and accounts that don't have a sound"
@@ -153,9 +153,9 @@ export function register(ctx) {
         });
     });
 
-    ctx.http.route('PUT', '/api/personas/me', ({ body, session, json }) => {
+    ctx.http.route('PUT', '/api/sounds/me', ({ body, session, json }) => {
         const exists = (id) => id === null
-            || db.prepare('SELECT 1 FROM persona_sounds WHERE id = ?').get(id);
+            || db.prepare('SELECT 1 FROM sounds WHERE id = ?').get(id);
 
         const joinSound = body?.joinSound ?? null;
         const leaveSound = body?.leaveSound ?? null;
@@ -164,7 +164,7 @@ export function register(ctx) {
         }
 
         db.prepare(`
-            INSERT INTO persona_choices (user_id, join_sound, leave_sound) VALUES (?, ?, ?)
+            INSERT INTO sound_choices (user_id, join_sound, leave_sound) VALUES (?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET join_sound = excluded.join_sound, leave_sound = excluded.leave_sound
         `).run(session.userId, joinSound, leaveSound);
 
@@ -172,7 +172,7 @@ export function register(ctx) {
     }, { maxBytes: 1_000 });
 
     // ── playing ──────────────────────────────────────────────────────────────
-    const choice = db.prepare('SELECT join_sound AS joinSound, leave_sound AS leaveSound FROM persona_choices WHERE user_id = ?');
+    const choice = db.prepare('SELECT join_sound AS joinSound, leave_sound AS leaveSound FROM sound_choices WHERE user_id = ?');
 
     /**
      * Tell a channel to play a sound.
@@ -200,5 +200,5 @@ export function register(ctx) {
     ctx.hooks.on(HOOKS.PEER_JOIN, ({ peer }) => announce(peer, 'join'));
     ctx.hooks.on(HOOKS.PEER_LEAVE, ({ peer }) => announce(peer, 'leave'));
 
-    ctx.admin.panel({ id: 'personas', label: 'Join and leave sounds', order: 50 });
+    ctx.admin.panel({ id: 'sounds', label: 'Join and leave sounds', order: 50 });
 }

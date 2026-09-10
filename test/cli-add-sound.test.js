@@ -31,7 +31,7 @@ test('add-sound writes a real row and file, and refuses whatever is not audio', 
     const dataDir = path.join(dir, 'data');
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-    // Boot once, for real, so the personas module's own migration actually runs —
+    // Boot once, for real, so the sounds module's own migration actually runs —
     // exactly what the command itself tells you to do if this step is skipped.
     const httpPort = await freePort();
     const mediaPort = await freePort();
@@ -53,7 +53,7 @@ test('add-sound writes a real row and file, and refuses whatever is not audio', 
         body: JSON.stringify({ code: setupCode, username: 'admin', password: 'a-long-enough-password' }),
     }).then((r) => r.json());
 
-    await fetch(`http://127.0.0.1:${httpPort}/api/admin/modules/personas/enable`, {
+    await fetch(`http://127.0.0.1:${httpPort}/api/admin/modules/sounds/enable`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${setup.token}` },
     });
@@ -71,7 +71,7 @@ test('add-sound writes a real row and file, and refuses whatever is not audio', 
     assert.match(added.stdout, /Added "Arrival Chime"/);
 
     const db = new Database(path.join(dataDir, 'weave.db'), { readonly: true });
-    const row = db.prepare('SELECT name, extension, mime, bytes FROM persona_sounds').get();
+    const row = db.prepare('SELECT name, extension, mime, bytes FROM sounds').get();
     db.close();
     assert.equal(row.name, 'Arrival Chime');
     assert.equal(row.extension, 'ogg');
@@ -95,7 +95,7 @@ test('add-sound writes a real row and file, and refuses whatever is not audio', 
 
 function countSounds(dataDir) {
     const db = new Database(path.join(dataDir, 'weave.db'), { readonly: true });
-    const { n } = db.prepare('SELECT COUNT(*) AS n FROM persona_sounds').get();
+    const { n } = db.prepare('SELECT COUNT(*) AS n FROM sounds').get();
     db.close();
     return n;
 }

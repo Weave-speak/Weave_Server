@@ -21,7 +21,7 @@ import {
     listUsers, getUserByUsername, setPassword, countAdmins, createUser, UserError,
 } from '../core/users/index.js';
 import { revokeAllForUser } from '../core/auth/index.js';
-import { sniff } from '../modules/personas/index.js';
+import { sniff } from '../modules/sounds/index.js';
 import { runDoctor, printReport } from './doctor.js';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
@@ -277,9 +277,9 @@ const COMMANDS = {
         const file = argv[1];
         if (!file) die('Usage: weave add-sound <file> [--name "Display name"]');
         if (!fs.existsSync(file)) die(`No such file: ${file}`);
-        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='persona_sounds'").get()) {
-            die('The personas module has never run its migration.\n'
-                + 'Run: weave modules enable personas — then restart the server once.');
+        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sounds'").get()) {
+            die('The sounds module has never run its migration.\n'
+                + 'Run: weave modules enable sounds — then restart the server once.');
         }
 
         const buffer = fs.readFileSync(file);
@@ -298,7 +298,7 @@ const COMMANDS = {
         fs.writeFileSync(path.join(dir, `${id}.${kind.ext}`), buffer);
 
         db.prepare(`
-            INSERT INTO persona_sounds (id, name, extension, mime, bytes, uploaded_by, created_at)
+            INSERT INTO sounds (id, name, extension, mime, bytes, uploaded_by, created_at)
             VALUES (?, ?, ?, ?, ?, NULL, ?)
         `).run(id, name, kind.ext, kind.mime, buffer.length, Date.now());
         db.close();
@@ -371,8 +371,8 @@ weave ${pkg.version}
     enable <id> | disable <id> Change it. Takes effect on restart; the admin
                                console can do it live.
   weave add-sound <file>       Add a join/leave sound straight to the library —
-    [--name "Display name"]   no admin account needed. personas must have run
-                               its migration once (enable it, then restart).
+    [--name "Display name"]   no admin account needed. The sounds module must
+                               have run its migration once (enable it, then restart).
 
   weave backup [--label x]     Take a consistent snapshot of the database.
   weave config                 Show every setting, what it does, and its current value.
