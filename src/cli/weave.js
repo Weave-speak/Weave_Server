@@ -11,6 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, describeConfig, ConfigError } from '../core/config/index.js';
@@ -20,6 +21,7 @@ import {
     listUsers, getUserByUsername, setPassword, countAdmins, createUser, UserError,
 } from '../core/users/index.js';
 import { revokeAllForUser } from '../core/auth/index.js';
+import { sniff } from '../modules/personas/index.js';
 import { runDoctor, printReport } from './doctor.js';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
@@ -265,6 +267,45 @@ const COMMANDS = {
         process.stdout.write('Restart for it to take effect:  sudo systemctl restart weave\n\n');
     },
 
+    // No HTTP, no admin session — filesystem access to the data directory is the
+    // whole authorisation, same principle as every other command here. Exists so a
+    // library can be seeded (or re-seeded, after a wipe) without ever creating or
+    // using an admin account for it.
+    async 'add-sound'() {
+        const config = withConfig();
+        const db = withDatabase(config);
+        const file = argv[1];
+        if (!file) die('Usage: weave add-sound <file> [--name "Display name"]');
+        if (!fs.existsSync(file)) die(`No such file: ${file}`);
+        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='persona_sounds'").get()) {
+            die('The personas module has never run its migration.\n'
+                + 'Run: weave modules enable personas — then restart the server once.');
+        }
+
+        const buffer = fs.readFileSync(file);
+        const kind = sniff(buffer);
+        if (!kind) die('That does not look like an OGG, MP3 or WAV file.');
+
+        const MAX_BYTES = 2 * 1024 * 1024;
+        if (buffer.length > MAX_BYTES) {
+            die(`${path.basename(file)} is ${(buffer.length / 1048576).toFixed(2)} MB, over the 2 MB limit.`);
+        }
+
+        const name = flag('name') || path.basename(file).replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+        const id = crypto.randomUUID();
+        const dir = path.join(config.dataDir, 'sounds');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, `${id}.${kind.ext}`), buffer);
+
+        db.prepare(`
+            INSERT INTO persona_sounds (id, name, extension, mime, bytes, uploaded_by, created_at)
+            VALUES (?, ?, ?, ?, ?, NULL, ?)
+        `).run(id, name, kind.ext, kind.mime, buffer.length, Date.now());
+        db.close();
+
+        process.stdout.write(`Added "${name}" (${kind.mime}, ${buffer.length} bytes)\n`);
+    },
+
     async backup() {
         const config = withConfig();
         const db = withDatabase(config);
@@ -329,6 +370,9 @@ weave ${pkg.version}
   weave modules                List modules and whether they are on.
     enable <id> | disable <id> Change it. Takes effect on restart; the admin
                                console can do it live.
+  weave add-sound <file>       Add a join/leave sound straight to the library —
+    [--name "Display name"]   no admin account needed. personas must have run
+                               its migration once (enable it, then restart).
 
   weave backup [--label x]     Take a consistent snapshot of the database.
   weave config                 Show every setting, what it does, and its current value.

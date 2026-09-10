@@ -25,7 +25,7 @@ const SIGNATURES = [
     { ext: 'wav', mime: 'audio/wav', test: (b) => b.subarray(0, 4).toString('ascii') === 'RIFF' && b.subarray(8, 12).toString('ascii') === 'WAVE' },
 ];
 
-function sniff(buffer) {
+export function sniff(buffer) {
     if (buffer.length < 12) return null;
     for (const sig of SIGNATURES) {
         try {
@@ -49,11 +49,28 @@ export function register(ctx) {
         label: 'Play join and leave sounds',
         help: 'Individual people can still choose to have no sound.',
     }, true);
+    // Applied to anyone with no personal choice — new accounts, and the entire
+    // server the first time this module is ever turned on. An empty string means
+    // "no default configured", not the id of a real sound.
+    ctx.settings.define('defaultJoinSound', {
+        type: 'string',
+        label: 'Default join sound',
+        help: 'Used for anyone who has not chosen one.',
+    }, '');
+    ctx.settings.define('defaultLeaveSound', {
+        type: 'string',
+        label: 'Default leave sound',
+        help: 'Used for anyone who has not chosen one.',
+    }, '');
 
     // ── the library ──────────────────────────────────────────────────────────
     ctx.http.route('GET', '/api/personas/sounds', ({ json }) => {
         json(200, {
             sounds: db.prepare('SELECT id, name, mime, bytes FROM persona_sounds ORDER BY name').all(),
+            defaults: {
+                joinSound: ctx.settings.get('defaultJoinSound') || null,
+                leaveSound: ctx.settings.get('defaultLeaveSound') || null,
+            },
         });
     });
 
@@ -89,8 +106,21 @@ export function register(ctx) {
         // Anyone who had chosen it falls back to silence rather than to a broken URL.
         db.prepare('UPDATE persona_choices SET join_sound = NULL WHERE join_sound = ?').run(params.id);
         db.prepare('UPDATE persona_choices SET leave_sound = NULL WHERE leave_sound = ?').run(params.id);
+        // A deleted default is no default, not a dangling id nobody can hear.
+        if (ctx.settings.get('defaultJoinSound') === params.id) ctx.settings.set('defaultJoinSound', '');
+        if (ctx.settings.get('defaultLeaveSound') === params.id) ctx.settings.set('defaultLeaveSound', '');
 
         json(200, { ok: true });
+    }, { auth: 'admin' });
+
+    ctx.http.route('PUT', '/api/personas/sounds/:id/default', ({ params, body, json }) => {
+        const which = body?.which === 'leave' ? 'leave' : body?.which === 'join' ? 'join' : null;
+        if (!which) throw new HttpError(400, 'which must be "join" or "leave".');
+        if (!db.prepare('SELECT 1 FROM persona_sounds WHERE id = ?').get(params.id)) {
+            throw new HttpError(404, 'No such sound.');
+        }
+        ctx.settings.set(which === 'join' ? 'defaultJoinSound' : 'defaultLeaveSound', params.id);
+        json(200, { which, soundId: params.id });
     }, { auth: 'admin' });
 
     ctx.http.route('GET', '/api/personas/sounds/:id/audio', ({ params, res }) => {
@@ -114,7 +144,13 @@ export function register(ctx) {
     ctx.http.route('GET', '/api/personas/me', ({ session, json }) => {
         const row = db.prepare('SELECT join_sound AS joinSound, leave_sound AS leaveSound FROM persona_choices WHERE user_id = ?')
             .get(session.userId);
-        json(200, { joinSound: row?.joinSound ?? null, leaveSound: row?.leaveSound ?? null });
+        // No personal choice falls back to whatever an admin has set as the default,
+        // rather than to null — "new accounts and accounts that don't have a sound"
+        // get the default dynamically, with nothing to migrate if it changes later.
+        json(200, {
+            joinSound: row?.joinSound ?? (ctx.settings.get('defaultJoinSound') || null),
+            leaveSound: row?.leaveSound ?? (ctx.settings.get('defaultLeaveSound') || null),
+        });
     });
 
     ctx.http.route('PUT', '/api/personas/me', ({ body, session, json }) => {
@@ -149,7 +185,8 @@ export function register(ctx) {
         if (!ctx.settings.get('enabled')) return;
 
         const row = choice.get(peer.userId);
-        const soundId = which === 'join' ? row?.joinSound : row?.leaveSound;
+        const personal = which === 'join' ? row?.joinSound : row?.leaveSound;
+        const soundId = personal ?? (ctx.settings.get(which === 'join' ? 'defaultJoinSound' : 'defaultLeaveSound') || null);
         if (!soundId) return;
 
         ctx.ws.broadcast('play', { soundId, which, cid: peer.cid, username: peer.username },

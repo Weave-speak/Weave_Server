@@ -83,8 +83,18 @@ async function launch() {
         return { ws, expect, joined, send: (t, p = {}) => ws.send(JSON.stringify({ type: t, ...p })) };
     };
 
+    /** Make a second account so two peers can be tested against each other. */
+    const makeMember = async (username) => {
+        const invite = await call('POST', '/api/invites', { token: admin.body.token, body: { maxUses: 1 } });
+        const reg = await call('POST', '/api/auth/register', {
+            body: { inviteCode: invite.body.invite.code, username, password: 'another-long-password' },
+        });
+        assert.equal(reg.status, 201, JSON.stringify(reg.body));
+        return reg.body.token;
+    };
+
     return {
-        app, call, connect, channels, token: admin.body.token,
+        app, call, connect, channels, makeMember, token: admin.body.token,
         cleanup: async () => {
             for (const s of sockets) { try { s.close(); } catch { /* gone */ } }
             await app.stop('test');
@@ -98,6 +108,9 @@ const pngBytes = () => Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     Buffer.alloc(64, 7),
 ]);
+
+/** A buffer whose leading bytes are a real OGG container signature. */
+const oggBytes = () => Buffer.concat([Buffer.from('OggS', 'ascii'), Buffer.alloc(64, 3)]);
 
 // ── text chat ────────────────────────────────────────────────────────────────
 
@@ -332,6 +345,66 @@ test('personas ship with an empty library and are off by default', async (t) => 
     assert.equal(sounds.status, 200);
     // The previous server baked in a library nobody had the right to redistribute.
     assert.equal(sounds.body.sounds.length, 0, 'no sounds are shipped');
+});
+
+test('an admin default applies to an account with no personal choice, until it makes one', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+    await h.call('POST', '/api/admin/modules/personas/enable', { token: h.token });
+
+    const a = await h.call('POST', '/api/personas/sounds?name=Arrival', { token: h.token, raw: oggBytes() });
+    assert.equal(a.status, 201, JSON.stringify(a.body));
+    const b = await h.call('POST', '/api/personas/sounds?name=Departure', { token: h.token, raw: oggBytes() });
+    assert.equal(b.status, 201, JSON.stringify(b.body));
+
+    // Nobody has chosen anything yet, and no default is configured: silence, not an error.
+    const bare = await h.call('GET', '/api/personas/me', { token: h.token });
+    assert.equal(bare.body.joinSound, null);
+    assert.equal(bare.body.leaveSound, null);
+
+    const setJoin = await h.call('PUT', `/api/personas/sounds/${a.body.id}/default`, {
+        token: h.token, body: { which: 'join' },
+    });
+    assert.equal(setJoin.status, 200, JSON.stringify(setJoin.body));
+    await h.call('PUT', `/api/personas/sounds/${b.body.id}/default`, { token: h.token, body: { which: 'leave' } });
+
+    // This account made no personal choice, so the admin default is what it gets —
+    // "new accounts and accounts that don't have a sound" from the feature request.
+    const defaulted = await h.call('GET', '/api/personas/me', { token: h.token });
+    assert.equal(defaulted.body.joinSound, a.body.id);
+    assert.equal(defaulted.body.leaveSound, b.body.id);
+    const list = await h.call('GET', '/api/personas/sounds', { token: h.token });
+    assert.equal(list.body.defaults.joinSound, a.body.id);
+    assert.equal(list.body.defaults.leaveSound, b.body.id);
+
+    // An explicit personal choice still outranks the default.
+    await h.call('PUT', '/api/personas/me', { token: h.token, body: { joinSound: b.body.id, leaveSound: a.body.id } });
+    const personal = await h.call('GET', '/api/personas/me', { token: h.token });
+    assert.equal(personal.body.joinSound, b.body.id);
+    assert.equal(personal.body.leaveSound, a.body.id);
+
+    // Deleting a sound that is somebody's default leaves no default, not a dangling id.
+    await h.call('DELETE', `/api/personas/sounds/${a.body.id}`, { token: h.token });
+    const afterDelete = await h.call('GET', '/api/personas/sounds', { token: h.token });
+    assert.equal(afterDelete.body.defaults.joinSound, null);
+});
+
+test('the default is what actually plays for someone who never chose', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+    await h.call('POST', '/api/admin/modules/personas/enable', { token: h.token });
+
+    const sound = await h.call('POST', '/api/personas/sounds?name=Arrival', { token: h.token, raw: oggBytes() });
+    await h.call('PUT', `/api/personas/sounds/${sound.body.id}/default`, { token: h.token, body: { which: 'join' } });
+
+    const a = await h.connect(h.token);
+    const memberToken = await h.makeMember('newcomer');
+    // 'newcomer' has never opened settings, let alone chosen a sound.
+    await h.connect(memberToken);
+
+    const played = await a.expect('personas:play');
+    assert.equal(played.soundId, sound.body.id);
+    assert.equal(played.which, 'join');
 });
 
 // ── detachability ────────────────────────────────────────────────────────────
