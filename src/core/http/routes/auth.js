@@ -325,7 +325,13 @@ export function registerAuthRoutes({ router, db, log, auth, setup, settings, pee
         try {
             await setPassword(db, session.userId, body?.newPassword);
         } catch (err) {
-            if (err instanceof UserError) throw new HttpError(400, err.message, { field: err.field });
+            // validatePassword() is shared with registration, where the field really is
+            // named 'password' — remap it to this route's own field name so the client
+            // highlights newPassword, not a box that does not exist on this screen.
+            if (err instanceof UserError) {
+                const field = err.field === 'password' ? 'newPassword' : err.field;
+                throw new HttpError(400, err.message, { field });
+            }
             throw err;
         }
         // An account an administrator had flagged has now done the one thing the flag was
