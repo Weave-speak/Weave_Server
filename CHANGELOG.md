@@ -7,6 +7,14 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.32] - 2026-09-12
+
+### Fixed
+- **Changing your password to one that is too short pointed at the wrong box.** The
+  validator behind it is shared with registration, where the field really is named
+  `password`; this screen's own field is `newPassword`, and the error was naming the
+  wrong one.
+
 ## [0.1.31] - 2026-09-11
 
 ### Added
