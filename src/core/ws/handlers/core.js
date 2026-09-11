@@ -50,6 +50,17 @@ export const KICK_CLOSE_CODE = 4006;
 export const SUPERSEDED_CLOSE_CODE = 4002;
 
 /**
+ * The account's sessions were revoked — it changed its own password on another device.
+ *
+ * Deliberately NOT 4003. That one is in the set the client treats as final and reads out as
+ * "an administrator reset your password", which would be a lie told to somebody about their
+ * own account. This code says nothing in particular, so the client reconnects, the join is
+ * refused as unauthenticated because the session really is gone, and the person is told the
+ * true thing: sign in again.
+ */
+export const SESSION_REVOKED_CLOSE_CODE = 4007;
+
+/**
  * The longest a timed server mute may run: a week.
  *
  * Not a policy, a typo guard. "Until an administrator lifts it" is already available by

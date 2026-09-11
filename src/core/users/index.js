@@ -115,6 +115,21 @@ export function recoveryQuestionFor(db, username, salt) {
     return decoyQuestionFor(username, salt);
 }
 
+/**
+ * The question THIS account actually uses, or null if it has none.
+ *
+ * Deliberately not recoveryQuestionFor: that one invents a plausible decoy for an account
+ * it cannot find, because the sign-in screen must never become a way to ask whether a
+ * username exists. Asked by an account about itself there is nobody to mislead, and the
+ * decoy would be a lie told to the only person entitled to the truth — somebody still on a
+ * legacy passphrase would be shown a question they never chose and could not answer.
+ */
+export function securityQuestionOf(db, userId) {
+    const row = db.prepare('SELECT recovery_question FROM users WHERE id = ?').get(userId);
+    if (!row?.recovery_question || !isQuestionId(row.recovery_question)) return null;
+    return { id: row.recovery_question, text: questionText(row.recovery_question) };
+}
+
 export function validateRecovery(phrase) {
     const value = String(phrase ?? '').trim();
     if (value.length < LIMITS.RECOVERY_MIN) {

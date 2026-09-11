@@ -48,6 +48,15 @@ export const CORE_FEATURES = Object.freeze([
     // panel has carried "the server has no route for this yet" placeholders since it was
     // written, and it needs to know when that stopped being true.
     'profile',
+    // Changing your own password and your own security question. Advertised because the
+    // client's Security & Recovery screen has shown "needs a server update" since it was
+    // drawn, and against a server without these routes that is still the honest thing for
+    // it to show — a form that can only 404 is worse than an explanation.
+    'account.security',
+    // Listing your own signed-in devices and signing one out. Its own flag rather than
+    // riding on account.security, because it needed a migration: a client talking to a
+    // server that has the password routes but not this one must still be told the truth.
+    'account.sessions',
 ]);
 
 export class ProtocolMismatchError extends Error {

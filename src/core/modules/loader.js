@@ -275,6 +275,11 @@ export class ModuleHost {
                 data: config.dataDir,
                 uploads: config.uploadsDir,
                 moduleDir: manifest.dir,
+                // Read-only in practice, and here for one reason: a diagnostics module's
+                // whole job is collecting what happened, and what the SERVER was doing at
+                // that moment is half of it. Everything else on this list is somewhere a
+                // module writes; this is the one it reads.
+                logs: config.logDir,
             },
 
             /**

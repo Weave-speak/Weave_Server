@@ -7,6 +7,61 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.31] - 2026-09-11
+
+### Added
+- **People can change their own password and security question.** Until now the server could
+  only do either on somebody's behalf: an administrator resetting an account, or the
+  forgotten-password flow on the sign-in screen. Neither is what somebody means when they
+  simply want a new password, and going through recovery signs you out everywhere and records
+  the account as one that needed rescuing.
+
+  Changing a password asks for the current one first — an open session is not proof of
+  anything, since the whole point of the screen is the moment somebody walks away from one —
+  and guesses at it are rate-limited the way guesses at the sign-in screen always were.
+
+- **A bug report can carry what somebody actually said.** The diagnostics endpoint has
+  received update logs and stream-quality notes since it was written; it now takes a
+  description alongside them, and accepts a report that has one even with no log attached —
+  a browser has no log file to offer, and the description is the part that matters.
+
+- **A bug report arrives with the server's own log attached.** The last few hundred lines, as
+  of the moment it lands, alongside the load stamp the endpoint already recorded. An
+  administrator then reads one file instead of correlating somebody's account of a moment
+  against the server log by timestamp. Bug reports only: an update failure has nothing to do
+  with the server, and stream reports arrive far too often to each carry one. The number of
+  lines is a setting, and zero switches it off.
+
+- **Reports can be read without a shell.** New administrator routes list the stored reports,
+  open one whole, and delete one — over the same folder of files the module already wrote,
+  rather than a second copy of them in a table.
+
+- **An account can see its own signed-in devices, and end any one of them.** Sessions have
+  always been recorded with enough detail to list; what was missing was a way to name one.
+  The table is keyed by the token's hash, which this server treats as the secret it is a hash
+  of, so **this needed a migration**: every session now carries an opaque id that is nothing
+  but an id. Existing sessions are given one too, since otherwise the devices signed in
+  before the upgrade would be the ones nobody could sign out.
+
+  Ending a session revokes it and closes any connection it was holding, so it stops at once
+  rather than when that device next reconnects. A device can only ever end its own account's
+  sessions: the account is part of the lookup, so somebody else's id matches nothing — the
+  same answer as an id that never existed.
+
+- **"Last active" is now true.** It was only written when a session passed half its life, so
+  it could be six hours stale — useless for the one question the list exists to answer. It is
+  refreshed as a session is used, at most once every few minutes, which is a handful of
+  writes an hour per device rather than one per request.
+
+- **Every session records what it signed in on.** Signing in and completing a forced reset
+  already did; registering, recovering an account and first-run setup did not — which left
+  the three ways of arriving on a brand-new device as the three that showed up unnamed.
+
+- **Your other devices are signed out, and the one you used is not.** Every other session for
+  the account is revoked and any live connection it holds is closed, so whoever knew the old
+  password is gone. Those devices are not told an administrator did it, because one did not:
+  they reconnect, find the session really is over, and are asked to sign in again.
+
 ## [0.1.30] - 2026-09-10
 
 ### Fixed

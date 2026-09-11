@@ -28,9 +28,12 @@ export const newToken = () => crypto.randomBytes(32).toString('base64url');
 export function issueSession(db, userId, kind = 'client', userAgent = null) {
     const token = newToken();
     db.prepare(`
-        INSERT INTO sessions (token_hash, user_id, kind, expires_at, last_used_at, user_agent)
-        VALUES (?, ?, ?, ?, ?, ?)
-    `).run(hashToken(token), userId, kind, Date.now() + SESSION_TTL_MS, Date.now(), userAgent);
+        INSERT INTO sessions (id, token_hash, user_id, kind, expires_at, last_used_at, user_agent)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        crypto.randomUUID(), hashToken(token), userId, kind,
+        Date.now() + SESSION_TTL_MS, Date.now(), userAgent,
+    );
     return token;
 }
 
@@ -41,6 +44,60 @@ export function revokeSession(db, token) {
 export function revokeAllForUser(db, userId) {
     return db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId).changes;
 }
+
+/**
+ * Every session this account holds EXCEPT the one asking.
+ *
+ * What somebody means by changing their own password: whoever else knew the old one is
+ * signed out, and the device they are typing on is not. Keyed by the token's hash rather
+ * than the token, because that is what a resolved session carries and what the table
+ * stores — the secret itself is never needed to say "not this row".
+ */
+export function revokeAllForUserExcept(db, userId, tokenHash) {
+    return db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?')
+        .run(userId, tokenHash ?? '').changes;
+}
+
+/**
+ * An account's live sessions, newest first.
+ *
+ * Never the token and never its hash: the id exists so that this list can be shown at all.
+ * Expired rows are left out rather than shown as dead entries — a session that cannot be
+ * used is not a device somebody needs to sign out.
+ */
+export function listSessionsForUser(db, userId) {
+    return db.prepare(`
+        SELECT id, kind, created_at AS createdAt, last_used_at AS lastUsedAt,
+               expires_at AS expiresAt, user_agent AS userAgent
+        FROM sessions
+        WHERE user_id = ? AND expires_at > ?
+        ORDER BY last_used_at DESC, created_at DESC
+    `).all(userId, Date.now());
+}
+
+/**
+ * Revoke ONE session, by id, belonging to one account.
+ *
+ * The account is part of the WHERE rather than something the caller is trusted to have
+ * checked. An id that belongs to somebody else matches no row, which is the same answer as
+ * an id that never existed — so this cannot be used to find out whose id it is either.
+ */
+export function revokeSessionById(db, userId, id) {
+    if (!id || typeof id !== 'string') return false;
+    return db.prepare('DELETE FROM sessions WHERE user_id = ? AND id = ?')
+        .run(userId, id).changes > 0;
+}
+
+/**
+ * How stale "last active" is allowed to get.
+ *
+ * The expiry slide below only writes once a session is half spent, so without this the
+ * figure could be six hours old — and "last active" being a lie is worse than not showing
+ * it, because the whole point is deciding whether a device you half-remember is still in
+ * use. A write every few minutes per session is nothing; a write per REQUEST is the shape
+ * that silently logged out all-day users on the old server, so it is deliberately not that.
+ */
+const TOUCH_AFTER_MS = 5 * 60 * 1000;
 
 /**
  * Look up a session and slide its expiry.
@@ -54,7 +111,7 @@ export function resolveSession(db, token) {
     if (!token) return null;
 
     const row = db.prepare(`
-        SELECT s.token_hash, s.user_id, s.kind, s.expires_at,
+        SELECT s.id, s.token_hash, s.user_id, s.kind, s.expires_at, s.last_used_at,
                u.username, u.display_name, u.avatar, u.status, u.is_admin, u.is_tester, u.is_disabled
         FROM sessions s
         JOIN users u ON u.id = s.user_id
@@ -72,11 +129,21 @@ export function resolveSession(db, token) {
     if (row.expires_at - Date.now() < RENEW_BELOW_MS) {
         db.prepare('UPDATE sessions SET expires_at = ?, last_used_at = ? WHERE token_hash = ?')
             .run(Date.now() + SESSION_TTL_MS, Date.now(), row.token_hash);
+    } else if (Date.now() - (row.last_used_at ?? 0) > TOUCH_AFTER_MS) {
+        db.prepare('UPDATE sessions SET last_used_at = ? WHERE token_hash = ?')
+            .run(Date.now(), row.token_hash);
     }
 
     return {
         userId: row.user_id,
         kind: row.kind,
+        // The opaque id, so a request can be told which of the account's sessions it IS —
+        // which is how the device list marks "this device" and refuses to sign it out from
+        // under itself.
+        sessionId: row.id,
+        // The HASH, never the token. It is what lets a route revoke every OTHER session
+        // without being handed the caller's bearer secret to compare against.
+        tokenHash: row.token_hash,
         username: row.username,
         displayName: row.display_name,
         avatar: row.avatar,
@@ -145,6 +212,9 @@ export function createAuth({ db, config, log }) {
 
         issue: (userId, kind, userAgent) => issueSession(db, userId, kind, userAgent),
         revoke: (token) => revokeSession(db, token),
+        revokeOthers: (userId, tokenHash) => revokeAllForUserExcept(db, userId, tokenHash),
+        sessionsFor: (userId) => listSessionsForUser(db, userId),
+        revokeById: (userId, id) => revokeSessionById(db, userId, id),
         resolveToken: (token) => resolveSession(db, token),
         cookieFor: (token, opts) => adminCookie(token, config, opts),
     };

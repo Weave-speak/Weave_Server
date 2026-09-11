@@ -37,6 +37,10 @@ export class PeerRegistry {
             cid: ws.cid,
             ws,
             userId: session.userId,
+            // WHICH of the account's sessions this connection is using, so signing that
+            // session out from the device list also cuts the connection it was holding.
+            // Without it a revoked device keeps talking until it happens to reconnect.
+            sessionId: session.sessionId ?? null,
             username: session.username,
             displayName: session.displayName,
             avatar: session.avatar,
@@ -133,6 +137,33 @@ export class PeerRegistry {
     /** Every live connection for one account. Someone may be signed in twice. */
     forUser(userId) {
         return [...this.#peers.values()].filter((p) => p.userId === userId);
+    }
+
+    /**
+     * Close every live socket ONE account holds, optionally sparing one connection.
+     *
+     * The single place sockets are shut on an account's behalf — an administrator's kick and
+     * somebody changing their own password both come through here. Written once rather than
+     * copied into each route that needs it, so the rule that makes it safe is reviewable in
+     * one place: the account is the caller's argument, and the only thing a cid can do is
+     * SPARE a connection this account already owns. There is no shape of call that reaches
+     * somebody else's socket.
+     *
+     * Sparing one is what lets a self-service password change sign out the other devices
+     * without signing out the device doing the changing; naming a session is what lets
+     * somebody sign out one device from the list and leave the rest alone.
+     */
+    closeForUser(userId, { exceptCid = null, sessionId = null, code = 4003, reason = 'account changed' } = {}) {
+        let closed = 0;
+        for (const peer of this.forUser(userId)) {
+            if (exceptCid && peer.cid === exceptCid) continue;
+            // Narrowing to one session, for signing out a single device rather than all
+            // of them. Still only ever this account's connections.
+            if (sessionId && peer.sessionId !== sessionId) continue;
+            try { peer.ws.close(code, reason); } catch { /* going anyway */ }
+            closed += 1;
+        }
+        return closed;
     }
 
     get all() {

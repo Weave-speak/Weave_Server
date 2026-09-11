@@ -14,11 +14,11 @@
 import { HttpError } from '../server.js';
 import { ensureDefaults } from '../../channels/index.js';
 import fs from 'node:fs';
-import path from 'node:path';
 import { listUsers, getUserById, setPassword, UserError } from '../../users/index.js';
 import { revokeAllForUser } from '../../auth/index.js';
 import { checkIntegrity, migrationStatus } from '../../../db/index.js';
 import { audit as writeAudit } from '../../admin/audit.js';
+import { tailLog } from '../../log/tail.js';
 
 /**
  * Columns never sent to a browser and never accepted from one.
@@ -63,14 +63,8 @@ const stripSecrets = (row) => {
 
 export function registerAdminRoutes({ router, db, config, log, moduleHost, peers, sfu, auth, ws, setup }) {
     /** Close every live socket an account holds — the server-side half of a kick. */
-    const kickUser = (userId, code = 4003, reason = 'account changed') => {
-        let kicked = 0;
-        for (const peer of peers?.forUser?.(userId) ?? []) {
-            try { peer.ws.close(code, reason); } catch { /* going anyway */ }
-            kicked += 1;
-        }
-        return kicked;
-    };
+    const kickUser = (userId, code = 4003, reason = 'account changed') =>
+        peers?.closeForUser?.(userId, { code, reason }) ?? 0;
 
     /**
      * Tell an account's live sessions their roles changed, so the client re-gates in place
@@ -404,37 +398,12 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
     });
 
     // ── logs ─────────────────────────────────────────────────────────────────
+    // The reading itself lives in core/log/tail.js, because a bug report attaches the same
+    // window of the same file and the two must not drift into reading it differently.
     admin('GET', '/api/admin/logs', ({ query, json }) => {
-        const lines = Math.min(2000, Math.max(1, Number(query.lines) || 300));
-        const files = fs.existsSync(config.logDir)
-            ? fs.readdirSync(config.logDir).filter((f) => f.startsWith('weave.log')).sort().reverse()
-            : [];
-
-        if (!files.length) return json(200, { entries: [], note: 'No log files yet.' });
-
-        const file = path.join(config.logDir, files[0]);
-        const { size } = fs.statSync(file);
-
-        // Read a window from the END rather than the whole file. The previous server
-        // loaded a 5 MB log into memory to take a 256 KB tail, every time.
-        const window = Math.min(size, 512 * 1024);
-        const buffer = Buffer.alloc(window);
-        const fd = fs.openSync(file, 'r');
-        try {
-            fs.readSync(fd, buffer, 0, window, size - window);
-        } finally {
-            fs.closeSync(fd);
-        }
-
-        const entries = buffer.toString('utf8')
-            .split('\n')
-            // A partial first line is expected when reading from an offset.
-            .slice(1)
-            .filter(Boolean)
-            .slice(-lines)
-            .map((line) => { try { return JSON.parse(line); } catch { return { msg: line }; } });
-
-        json(200, { entries, file: files[0], truncated: size > window });
+        const { entries, file, truncated } = tailLog(config.logDir, query.lines);
+        if (!file) return json(200, { entries: [], note: 'No log files yet.' });
+        json(200, { entries, file, truncated });
     });
 
     // ── settings ─────────────────────────────────────────────────────────────
