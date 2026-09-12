@@ -7,6 +7,26 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.33] - 2026-09-12
+
+### Changed
+- **Screen shares can go higher.** The app now offers a High tier at 1440p and a Source tier
+  at your screen's own resolution, each budgeting 8 Mb/s for the picture. Two things on the
+  server stood in their way, and both have moved.
+
+  The ceiling on what one person may send — `WEAVE_MAX_INCOMING_BITRATE` — is now **16 Mb/s**
+  by default, up from 8. It covers everything that person sends at once, so at 8 a High share
+  was squeezed below its own budget as soon as their microphone and the share's sound were
+  counted too, and further with a webcam on.
+
+  And H.264 is now advertised at level 5.2, where it was 4.2. Level 4.2 stops at exactly
+  1080p; 5.2 reaches a 4K screen at 60 frames a second. The profile is unchanged, so every
+  browser that could connect before still can.
+
+  **If you host on a home connection, read this:** everyone watching a share receives about
+  its bitrate from your server, so three people watching one High share is roughly 24 Mb/s of
+  upload. Setting `WEAVE_MAX_INCOMING_BITRATE` back to `8000000` restores the old behaviour.
+
 ## [0.1.32] - 2026-09-12
 
 ### Fixed

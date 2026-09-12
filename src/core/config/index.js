@@ -112,8 +112,8 @@ export const SCHEMA = [
         check: (v) => v === null || (v >= 8000 && v <= 512000) || 'must be between 8000 and 512000',
     },
     {
-        key: 'WEAVE_MAX_INCOMING_BITRATE', name: 'maxIncomingBitrate', parse: asInt, default: 8000000,
-        doc: 'Ceiling on what ONE participant may send this server, in bits per second, across all their streams at once. Lower it if your upload is thin: a screen share capped below its preset is better than one that saturates the link and takes the voice with it.',
+        key: 'WEAVE_MAX_INCOMING_BITRATE', name: 'maxIncomingBitrate', parse: asInt, default: 16000000,
+        doc: 'Ceiling on what ONE participant may send this server, in bits per second, across all their streams at once. The default leaves room for the client\'s top screen-share tiers (8000000 for the video alone) beside a microphone, the share\'s audio and a webcam; at 8000000 those shares were squeezed below their own budget. Every viewer of such a share costs roughly its bitrate in this server\'s UPLOAD, so lower it if your upload is thin: a share capped below its tier is better than one that saturates the link and takes the voice with it.',
         check: (v) => (v >= 100000 && v <= 100000000) || 'must be between 100000 and 100000000',
     },
     {

@@ -157,12 +157,15 @@ test('an operator who clears the bitrate gets the browser default back', () => {
 test('the advertised H264 level covers the resolutions the client offers', async (t) => {
     // '42e01f' is Constrained Baseline LEVEL 3.1, which caps at 3600 macroblocks — exactly
     // 1280x720. Three of the four stream presets are 1080p or larger, so the level being
-    // advertised was one every one of those shares exceeded.
+    // advertised was one every one of those shares exceeded. Level 4.2 then stopped at
+    // exactly 1080p, below the client's 1440p tier; a Source share of a 4K screen at 60 is
+    // what needs 5.2 rather than 5.1.
     const h = await launch();
     t.after(h.cleanup);
 
     const h264 = videoOf(await h.caps()).find((c) => c.mimeType.toLowerCase() === 'video/h264');
-    assert.equal(h264.parameters['profile-level-id'], '42e02a', 'level 4.2');
+    assert.equal(h264.parameters['profile-level-id'], '42e034', 'level 5.2');
+    assert.equal(h264.parameters['profile-level-id'].slice(0, 4), '42e0', 'the profile itself is unchanged');
 });
 
 test('VP9 is offered, and H264 still comes first', async (t) => {

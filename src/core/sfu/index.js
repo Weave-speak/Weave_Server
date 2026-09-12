@@ -84,14 +84,18 @@ export function mediaCodecs({ opusBitrate = null } = {}) {
             clockRate: 90000,
             parameters: {
                 'packetization-mode': 1,
-                // Constrained Baseline, LEVEL 4.2 (level_idc 0x2a). This was '42e01f' --
+                // Constrained Baseline, LEVEL 5.2 (level_idc 0x34). This was '42e01f' --
                 // level 3.1, which caps at 3600 macroblocks per frame, exactly 1280x720,
                 // and 108000 MB/s. 1080p is 8160 MB and 1080p60 is 489600 MB/s, so the
                 // level we advertised was one that three of the four stream presets
-                // exceeded. The PROFILE is unchanged, so every browser that matched
+                // exceeded. It then went to 4.2 ('42e02a'), whose 8192 MB per frame is
+                // exactly 1080p -- and the client has since grown a 1440p tier (14400 MB
+                // per frame) and a Source tier that is a 4K screen at 60 (32400 MB per
+                // frame, 1944000 MB/s). 5.1 covers the frame size; only 5.2's 2073600 MB/s
+                // covers 4K at 60. The PROFILE is unchanged, so every browser that matched
                 // before still matches: h264 matching compares profiles, and level
                 // asymmetry is explicitly allowed below.
-                'profile-level-id': '42e02a',
+                'profile-level-id': '42e034',
                 'level-asymmetry-allowed': 1,
                 'x-google-start-bitrate': 1000,
             },

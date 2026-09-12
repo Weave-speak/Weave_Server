@@ -110,12 +110,19 @@ starts discarding the top octave of speech. That is most of what "muffled" means
 
 ### `WEAVE_MAX_INCOMING_BITRATE`
 
-Defaults to `8000000`: the ceiling on what **one** participant may send this server across
+Defaults to `16000000`: the ceiling on what **one** participant may send this server across
 all their streams at once — microphone, screen share, that share's audio, and a webcam.
 
-Lower it if your upload is thin. A screen share capped below its preset is better than one
-that saturates the link and takes everybody's voice down with it. The server communicates
-the limit through congestion control rather than trusting clients to respect it.
+The client's top screen-share tiers, High (1440p) and Source, budget 8 Mb/s for the video
+alone. The old default of `8000000` squeezed them below that budget the moment a microphone
+and the share's own audio were counted too, and further with a webcam on. Sixteen leaves
+room for all of it.
+
+The cost lands on the server's **upload**: every person watching a share receives roughly
+its bitrate from this server, so three people watching one High share is about 24 Mb/s
+going out. On a home line, lower this. A share capped below its tier is better than one that
+saturates the link and takes everybody's voice down with it. The server communicates the
+limit through congestion control rather than trusting clients to respect it.
 
 ### `WEAVE_MAX_OUTGOING_BITRATE`
 
