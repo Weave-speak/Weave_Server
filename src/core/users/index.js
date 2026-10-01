@@ -155,6 +155,49 @@ export function validateDisplayName(name) {
     return value;
 }
 
+/**
+ * A name as a reader sees it, for telling whether two names are the same.
+ *
+ * Compared this way rather than byte for byte, because the copy anyone would actually try
+ * is not an exact one: "walter" for "Walter", a fullwidth letter, a doubled space, or a
+ * zero-width character tucked inside so the bytes differ and the screen does not. NFKC
+ * folds the compatibility forms, and the format and control characters are dropped
+ * outright. Cross-script lookalikes — a Cyrillic "а" for a Latin "a" — are NOT caught;
+ * that needs a confusables table, which is a dependency this does not yet justify.
+ */
+export function nameKey(name) {
+    return String(name ?? '')
+        .normalize('NFKC')
+        .replace(/[\p{Cf}\p{Cc}]/gu, '')
+        .replace(/\s+/gu, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+/**
+ * Refuse a display name that would read as somebody else.
+ *
+ * Checked against every other account's username as well as its display name: a name is
+ * only worth copying because people recognise it, and they recognise both. Disabled
+ * accounts count too — a banned member's name is still the one everybody remembers.
+ * A full scan rather than an indexed column: an invite-only server has dozens of
+ * accounts, not millions, and a stored key would need a migration and a backfill.
+ */
+export function assertNameFree(db, name, exceptUserId = null) {
+    const key = nameKey(name);
+    const taken = db.prepare('SELECT id, username, display_name AS displayName FROM users').all()
+        .some((row) => row.id !== exceptUserId
+            && (nameKey(row.username) === key || nameKey(row.displayName) === key));
+    if (taken) {
+        // Says what to do, because at registration the clashing name may never have been
+        // typed: an empty display name defaults to the username.
+        throw new UserError(
+            'Someone on this server already goes by that name. Choose a different display name.',
+            'displayName',
+        );
+    }
+}
+
 // last_seen_at is included because the admin console shows it; without it the column
 // rendered as an em-dash for everyone, which looks like "nobody has ever signed in"
 // rather than "this field was never selected".
@@ -179,6 +222,9 @@ export async function createUser(db, {
     if (existing) {
         throw new UserError('That username is already taken.', 'username');
     }
+    // After the username, so a taken username is reported as that rather than as the
+    // display name it was defaulted into.
+    assertNameFree(db, display);
 
     const passwordHash = await argonHash(password);
 
@@ -223,14 +269,24 @@ export const isStatus = (value) => STATUSES.includes(value);
 /**
  * Change what a person has published about themselves.
  *
- * Only the two fields a person owns. Everything else about an account — admin, disabled,
+ * Only the three fields a person owns. Everything else about an account — admin, disabled,
  * username — is somebody else's decision and belongs on the admin routes, so this cannot
- * be widened by passing extra keys.
+ * be widened by passing extra keys. The display name is the one an administrator may
+ * also set, and the admin rename comes through here so the two cannot drift apart.
  */
-export function updateProfile(db, userId, { status, avatar } = {}) {
+export function updateProfile(db, userId, { status, avatar, displayName } = {}) {
     const sets = [];
     const values = [];
 
+    if (displayName !== undefined) {
+        const value = validateDisplayName(displayName);
+        // Only a CHANGE is checked. Names shared before this rule existed are left alone,
+        // and saving one unchanged must not be refused for a clash that was already there.
+        const current = getUserById(db, userId)?.displayName;
+        if (nameKey(value) !== nameKey(current)) assertNameFree(db, value, userId);
+        sets.push('display_name = ?');
+        values.push(value);
+    }
     if (status !== undefined) {
         if (!isStatus(status)) {
             throw new UserError(`Status must be one of: ${STATUSES.join(', ')}.`, 'status');

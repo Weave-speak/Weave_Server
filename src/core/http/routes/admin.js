@@ -14,7 +14,8 @@
 import { HttpError } from '../server.js';
 import { ensureDefaults } from '../../channels/index.js';
 import fs from 'node:fs';
-import { listUsers, getUserById, setPassword, UserError } from '../../users/index.js';
+import { listUsers, getUserById, setPassword, updateProfile, UserError } from '../../users/index.js';
+import { announceProfile } from './profile.js';
 import { revokeAllForUser } from '../../auth/index.js';
 import { checkIntegrity, migrationStatus } from '../../../db/index.js';
 import { audit as writeAudit } from '../../admin/audit.js';
@@ -343,16 +344,26 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
         json(200, { ok: true });
     });
 
+    // Through updateProfile, the same as renaming yourself. This route used to carry its own
+    // copy of the rules, allowing 40 characters where every other path allowed 32, and it
+    // told nobody: the new name only appeared once the person happened to reconnect.
+    //
+    // The roster update is all that is sent. There is deliberately no "an administrator
+    // renamed you" notice to the person themselves — their name simply changes on every
+    // screen, theirs included, the way a new picture does.
     admin('PUT', '/api/admin/members/:id', ({ params, body, session, json }) => {
         const user = getUserById(db, params.id);
         if (!user) throw new HttpError(404, 'No such user.');
-        const displayName = String(body?.displayName ?? '').trim();
-        if (!displayName || displayName.length > 40) {
-            throw new HttpError(400, 'A display name is 1 to 40 characters.');
+        let renamed;
+        try {
+            renamed = updateProfile(db, user.id, { displayName: body?.displayName ?? '' });
+        } catch (err) {
+            if (err instanceof UserError) throw new HttpError(400, err.message, { field: err.field });
+            throw err;
         }
-        db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, user.id);
-        audit(session, 'ADMIN_RENAMED_USER', `${user.username} -> ${displayName}`);
-        json(200, { ok: true });
+        announceProfile({ peers, ws }, renamed);
+        audit(session, 'ADMIN_RENAMED_USER', `${user.username} -> ${renamed.displayName}`);
+        json(200, { ok: true, user: renamed });
     }, { maxBytes: 1_000 });
 
     admin('POST', '/api/admin/members/:id/admin', ({ params, body, session, json }) => {

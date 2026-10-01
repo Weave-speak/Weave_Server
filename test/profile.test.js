@@ -18,6 +18,7 @@ import { WebSocket } from 'ws';
 import { freePort, startWithRetry } from './helpers.js';
 
 import { sniffImage } from '../src/core/media/image-type.js';
+import { nameKey } from '../src/core/users/index.js';
 
 /** The smallest thing that is genuinely a PNG as far as the sniffer is concerned. */
 const PNG = Buffer.concat([
@@ -100,7 +101,7 @@ async function launch() {
         await expect('hello');
         ws.send(JSON.stringify({ type: 'join', token, protocol: { min: 1, max: 1 } }));
         const joined = await expect('joined');
-        return { ws, joined, expect };
+        return { ws, joined, expect, send: (type, payload = {}) => ws.send(JSON.stringify({ type, ...payload })) };
     };
 
     return {
@@ -306,4 +307,171 @@ test('a picture is not public: it needs a session like everything else', async (
     const anonymous = await h.call('GET', `/api/avatars/${up.body.avatar}`);
     assert.equal(anonymous.status, 401,
         'a roster is not public, and neither is what the people on it look like');
+});
+
+// ── the name ─────────────────────────────────────────────────────────────────
+//
+// Mostly about what is refused. A display name is the one thing on a roster anybody can
+// set to anything, which makes "be somebody else" the misuse it invites — so the rule is
+// checked against how names READ, on every path that chooses one: renaming yourself, an
+// administrator renaming you, and registering.
+
+test('two names are the same name when they read the same', () => {
+    assert.equal(nameKey('Walter'), nameKey('walter'));
+    assert.equal(nameKey('Walter'), nameKey('  Walter  '));
+    assert.equal(nameKey('Big Walt'), nameKey('Big   Walt'));
+    assert.equal(nameKey('Walter'), nameKey('Wal​ter'), 'a zero-width space is invisible on screen');
+    assert.equal(nameKey('Walter'), nameKey('Ｗａｌｔｅｒ'), 'fullwidth letters fold to plain ones');
+    assert.notEqual(nameKey('Walter'), nameKey('Walter2'));
+});
+
+test('renaming is advertised, so a client only offers it where it works', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const info = await h.call('GET', '/api/server-info');
+    assert.ok(info.body.features.includes('profile.display-name'));
+});
+
+test('a person can rename themselves, and everybody sees it', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+
+    const watcher = await h.connect(h.adminToken);
+    await h.connect(kes.token);
+
+    const res = await h.call('PATCH', '/api/me', { token: kes.token, body: { displayName: '  Kes  ' } });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.user.displayName, 'Kes', 'trimmed, like everywhere else a name is taken');
+    assert.equal(res.body.user.username, 'kestrel', 'the sign-in name is not what changed');
+
+    const told = await watcher.expect('peer_profile_changed');
+    assert.equal(told.userId, kes.user.id);
+    assert.equal(told.displayName, 'Kes');
+
+    const me = await h.call('GET', '/api/me', { token: kes.token });
+    assert.equal(me.body.user.displayName, 'Kes');
+
+    // A client arriving afterwards learns it from the roster.
+    const fresh = await h.connect(h.adminToken);
+    assert.equal(fresh.joined.peers.find((p) => p.userId === kes.user.id).displayName, 'Kes');
+});
+
+test('a message sent after a rename is signed with the new name', async (t) => {
+    // The bug this covers: a live connection keeps its own copy of the name from when it
+    // joined, and that copy is what signs a message. Updating only the account showed the
+    // new name in every roster while the next message still went out under the old one.
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+
+    const watcher = await h.connect(h.adminToken);
+    const kesSocket = await h.connect(kes.token);
+
+    await h.call('PATCH', '/api/me', { token: kes.token, body: { displayName: 'Kes' } });
+    await watcher.expect('peer_profile_changed');
+
+    kesSocket.send('text-chat:send', { body: 'same person, new name' });
+    const { message } = await watcher.expect('text-chat:message');
+    assert.equal(message.authorName, 'Kes');
+});
+
+test('a name is 1 to 32 characters, and nothing else is accepted', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+
+    for (const displayName of ['', '   ', 'x'.repeat(33)]) {
+        const res = await h.call('PATCH', '/api/me', { token: kes.token, body: { displayName } });
+        assert.equal(res.status, 400, `"${displayName}" should be refused`);
+        assert.equal(res.body.detail?.field, 'displayName');
+    }
+    const longest = await h.call('PATCH', '/api/me', { token: kes.token, body: { displayName: 'x'.repeat(32) } });
+    assert.equal(longest.status, 200);
+});
+
+test('nobody can take a name somebody else already goes by', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const sam = await h.mint('samphire');
+
+    // Somebody else's username, however it is dressed up.
+    for (const copy of ['admin', 'ADMIN', ' Admin ', 'ad​min', 'ａｄｍｉｎ']) {
+        const res = await h.call('PATCH', '/api/me', { token: kes.token, body: { displayName: copy } });
+        assert.equal(res.status, 400, `${JSON.stringify(copy)} reads as the administrator`);
+        assert.equal(res.body.detail?.field, 'displayName');
+    }
+
+    // Somebody else's display name.
+    await h.call('PATCH', '/api/me', { token: sam.token, body: { displayName: 'Sparrow' } });
+    const taken = await h.call('PATCH', '/api/me', { token: kes.token, body: { displayName: 'sparrow' } });
+    assert.equal(taken.status, 400);
+    assert.match(taken.body.message, /already goes by that name/);
+
+    // Your OWN names are yours to use, in any case.
+    const own = await h.call('PATCH', '/api/me', { token: kes.token, body: { displayName: 'Kestrel' } });
+    assert.equal(own.status, 200, JSON.stringify(own.body));
+    const recased = await h.call('PATCH', '/api/me', { token: sam.token, body: { displayName: 'SPARROW' } });
+    assert.equal(recased.status, 200, 'a change of case to your own name is not a copy');
+});
+
+test('registering cannot copy a name either', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    await h.call('PATCH', '/api/me', { token: kes.token, body: { displayName: 'Walter' } });
+
+    const register = async (body) => {
+        const invite = await h.call('POST', '/api/invites', { token: h.adminToken, body: {} });
+        return h.call('POST', '/api/auth/register', {
+            body: { inviteCode: invite.body.invite.code, password: 'a-long-enough-password', ...body },
+        });
+    };
+
+    const chosen = await register({ username: 'newcomer', displayName: 'walter' });
+    assert.equal(chosen.status, 400);
+    assert.equal(chosen.body.detail?.field, 'displayName');
+
+    // An empty display name defaults to the username — which here reads as Walter too.
+    const defaulted = await register({ username: 'walter' });
+    assert.equal(defaulted.status, 400);
+    assert.equal(defaulted.body.detail?.field, 'displayName');
+
+    // And a taken USERNAME is still reported as exactly that.
+    const dupe = await register({ username: 'kestrel' });
+    assert.equal(dupe.status, 400);
+    assert.equal(dupe.body.detail?.field, 'username');
+
+    const fine = await register({ username: 'walter', displayName: 'Walt from accounts' });
+    assert.equal(fine.status, 201, JSON.stringify(fine.body));
+});
+
+test('an administrator rename follows the same rules, and reaches every screen', async (t) => {
+    // It used to allow 40 characters where everything else allowed 32, check nothing for
+    // clashes, and tell nobody — the new name appeared only once that person reconnected.
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const sam = await h.mint('samphire');
+
+    const watcher = await h.connect(h.adminToken);
+    await h.connect(kes.token);
+
+    const rename = (id, displayName) => h.call('PUT', `/api/admin/members/${id}`, {
+        token: h.adminToken, body: { displayName },
+    });
+
+    assert.equal((await rename(kes.user.id, 'x'.repeat(33))).status, 400);
+    assert.equal((await rename(kes.user.id, 'Samphire')).status, 400, 'not even an admin can make a copy');
+    assert.equal((await rename(sam.user.id, 'kestrel')).status, 400);
+
+    const ok = await rename(kes.user.id, 'Kes');
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const told = await watcher.expect('peer_profile_changed');
+    assert.equal(told.userId, kes.user.id);
+    assert.equal(told.displayName, 'Kes');
+
+    const me = await h.call('GET', '/api/me', { token: kes.token });
+    assert.equal(me.body.user.displayName, 'Kes');
 });

@@ -27,44 +27,64 @@ import { sniffImage, IMAGE_REFUSAL } from '../../media/image-type.js';
  */
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Tell everyone the roster changed for this account.
+ *
+ * Per USER, because all of these are facts about an account rather than about one
+ * connection: somebody signed in twice has one face, one status and one name, and updating
+ * only the connection that made the request would show them differently in two places.
+ *
+ * The live peers are updated as well as the broadcast sent, because a peer carries its own
+ * copy of the name from the moment it joined, and that copy is what signs chat messages,
+ * DM calls and slash commands. Left alone, a rename would show in every roster and still
+ * sign the next message with the old name.
+ *
+ * Exported because an administrator's rename has to land the same way.
+ */
+export function announceProfile({ peers, ws }, user) {
+    for (const peer of peers.forUser(user.id)) {
+        peer.avatar = user.avatar;
+        peer.status = user.status;
+        peer.displayName = user.displayName;
+    }
+    ws.broadcast('peer_profile_changed', {
+        userId: user.id,
+        avatar: user.avatar,
+        status: user.status,
+        displayName: user.displayName,
+    });
+}
+
 export function registerProfileRoutes({ router, db, config, log, peers, ws }) {
     const dir = config.avatarsDir;
     fs.mkdirSync(dir, { recursive: true });
 
-    /**
-     * Tell everyone the roster changed for this account.
-     *
-     * Per USER, because both of these are facts about an account rather than about one
-     * connection: somebody signed in twice has one face and one status, and updating only
-     * the connection that made the request would show them differently in two places.
-     */
-    const announce = (user) => {
-        for (const peer of peers.forUser(user.id)) {
-            peer.avatar = user.avatar;
-            peer.status = user.status;
-        }
-        ws.broadcast('peer_profile_changed', {
-            userId: user.id,
-            avatar: user.avatar,
-            status: user.status,
-            displayName: user.displayName,
-        });
-    };
+    const announce = (user) => announceProfile({ peers, ws }, user);
 
-    // ── status ───────────────────────────────────────────────────────────────
+    // ── status and name ──────────────────────────────────────────────────────
     //
-    // Separate from the "away" the roster derives from standing in an AFK channel, and
-    // deliberately so: that one answers "where is this person", this one answers "what
-    // have they told us". The AFK sweep moves people between rooms and must never
-    // overwrite something its owner set on purpose.
+    // The status is separate from the "away" the roster derives from standing in an AFK
+    // channel, and deliberately so: that one answers "where is this person", this one
+    // answers "what have they told us". The AFK sweep moves people between rooms and must
+    // never overwrite something its owner set on purpose.
     router.register('core', 'PATCH', '/api/me', ({ body, session, json }) => {
         try {
+            const before = body?.displayName !== undefined
+                ? getUserById(db, session.userId)?.displayName
+                : undefined;
             const user = updateProfile(db, session.userId, {
                 ...(body?.status !== undefined ? { status: body.status } : {}),
+                ...(body?.displayName !== undefined ? { displayName: body.displayName } : {}),
             });
             announce(user);
-            log.info({ evt: 'profile.updated', user: session.username, status: user.status },
-                `${session.username} is now ${user.status}`);
+            if (before !== undefined && before !== user.displayName) {
+                log.info({ evt: 'profile.renamed', user: session.username, from: before, to: user.displayName },
+                    `${session.username} now goes by "${user.displayName}" (was "${before}")`);
+            }
+            if (body?.status !== undefined) {
+                log.info({ evt: 'profile.updated', user: session.username, status: user.status },
+                    `${session.username} is now ${user.status}`);
+            }
             json(200, { user });
         } catch (err) {
             if (err instanceof UserError) throw new HttpError(400, err.message, { field: err.field });

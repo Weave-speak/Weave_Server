@@ -175,15 +175,15 @@ export function register(ctx) {
     const choice = db.prepare('SELECT join_sound AS joinSound, leave_sound AS leaveSound FROM sound_choices WHERE user_id = ?');
 
     /**
-     * Whether this account has another connection standing in the same room.
+     * Whether this account has another connection standing in `channelId`.
      *
      * The one thing a sound must never do is describe something that did not happen. An
      * account is allowed two connections — a desktop and a phone, or a reconnection
      * overlapping the socket it replaced — and in every one of those cases the person
      * neither arrived nor left, so nothing should be heard.
      */
-    const elsewhereInRoom = (peer) => ctx.peers.forUser(peer.userId)
-        .some((other) => other.cid !== peer.cid && other.channelId === peer.channelId);
+    const elsewhereInRoom = (peer, channelId) => ctx.peers.forUser(peer.userId)
+        .some((other) => other.cid !== peer.cid && other.channelId === channelId);
 
     /**
      * Tell a channel to play a sound.
@@ -191,10 +191,17 @@ export function register(ctx) {
      * The server sends an id, never audio: the sound is fetched and cached by the client
      * like any other asset, so a busy channel does not push the same file through the
      * signalling socket once per arrival.
+     *
+     * The room is passed in rather than read off the peer, because by the time a move is
+     * announced the peer already stands in the room it went TO — and the departure belongs
+     * to the one it came from.
      */
-    const announce = (peer, which) => {
+    const announce = (peer, which, channelId = peer.channelId) => {
         if (!ctx.settings.get('enabled')) return;
-        if (elsewhereInRoom(peer)) return;
+        // Standing nowhere is not a room. Every roomless reader shares a null channel, so
+        // without this one of them signing in was "heard" by all the others.
+        if (!channelId) return;
+        if (elsewhereInRoom(peer, channelId)) return;
 
         const row = choice.get(peer.userId);
         const personal = which === 'join' ? row?.joinSound : row?.leaveSound;
@@ -205,7 +212,7 @@ export function register(ctx) {
             (sock) => {
                 const other = ctx.peers.get(sock.cid);
                 // Not to the person arriving or leaving: they know.
-                return other && other.channelId === peer.channelId && other.cid !== peer.cid;
+                return other && other.channelId === channelId && other.cid !== peer.cid;
             });
     };
 
@@ -213,6 +220,14 @@ export function register(ctx) {
     // the noise that made a flaky connection sound like somebody pacing in and out.
     ctx.hooks.on(HOOKS.PEER_JOIN, ({ peer, resumed }) => { if (!resumed) announce(peer, 'join'); });
     ctx.hooks.on(HOOKS.PEER_LEAVE, ({ peer }) => announce(peer, 'leave'));
+    // Most arrivals are not a socket opening. Switching rooms, picking one from the lobby,
+    // the disconnect button, an admin's drag, the idle sweep and a DM call all happen on a
+    // socket that stays open, and all of them were silent while only the two hooks above
+    // were wired — which is why the sounds seemed to come and go.
+    ctx.hooks.on(HOOKS.PEER_MOVE, ({ peer, from, to }) => {
+        if (from) announce(peer, 'leave', from);
+        if (to) announce(peer, 'join', to);
+    });
 
     ctx.admin.panel({ id: 'sounds', label: 'Join and leave sounds', order: 50 });
 }

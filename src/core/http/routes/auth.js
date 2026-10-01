@@ -18,6 +18,7 @@ import {
     UserError, getUserById, touchLastSeen, normalise,
     validateUsername, validateDisplayName, validatePassword, validateRecovery,
     validateQuestionId, validateSecurityAnswer, recoveryQuestionFor, securityQuestionOf,
+    assertNameFree,
 } from '../../users/index.js';
 import { SECURITY_QUESTIONS, normaliseAnswer } from '../../auth/questions.js';
 import { checkInvite, redeemInvite, InviteError } from '../../invites/index.js';
@@ -461,6 +462,9 @@ async function createUserPrepared(db, body) {
     if (db.prepare('SELECT 1 FROM users WHERE username_lower = ?').get(lower)) {
         throw new UserError('That username is already taken.', 'username');
     }
+    // Registration is a way to choose a name too, and the cheapest one to copy with. Left
+    // unchecked here, the rule on renaming would only stop people who were already members.
+    assertNameFree(db, displayName);
 
     const passwordHash = await argonHash(body.password);
 

@@ -48,6 +48,11 @@ export const CORE_FEATURES = Object.freeze([
     // panel has carried "the server has no route for this yet" placeholders since it was
     // written, and it needs to know when that stopped being true.
     'profile',
+    // Renaming yourself. Its own flag rather than riding on 'profile', because a server
+    // with pictures but not this route accepts a displayName in PATCH /api/me, ignores it
+    // and answers 200 — a client trusting 'profile' would show a save that silently does
+    // nothing.
+    'profile.display-name',
     // Changing your own password and your own security question. Advertised because the
     // client's Security & Recovery screen has shown "needs a server update" since it was
     // drawn, and against a server without these routes that is still the honest thing for

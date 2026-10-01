@@ -57,7 +57,7 @@ async function launch() {
     const channels = (await call('GET', '/api/channels', { token: admin.body.token })).body.channels;
 
     const sockets = [];
-    const connect = async (token, channelId) => {
+    const connect = async (token, channelId, { autoJoin } = {}) => {
         const ws = new WebSocket(`ws://127.0.0.1:${httpPort}`);
         sockets.push(ws);
         const inbox = [];
@@ -78,9 +78,9 @@ async function launch() {
         };
         await new Promise((r) => ws.once('open', r));
         await expect('hello');
-        ws.send(JSON.stringify({ type: 'join', token, channelId, protocol: { min: 1, max: 1 } }));
+        ws.send(JSON.stringify({ type: 'join', token, channelId, autoJoin, protocol: { min: 1, max: 1 } }));
         const joined = await expect('joined');
-        return { ws, expect, joined, send: (t, p = {}) => ws.send(JSON.stringify({ type: t, ...p })) };
+        return { ws, inbox, expect, joined, send: (t, p = {}) => ws.send(JSON.stringify({ type: t, ...p })) };
     };
 
     /** Make a second account so two peers can be tested against each other. */
@@ -405,6 +405,86 @@ test('the default is what actually plays for someone who never chose', async (t)
     const played = await a.expect('sounds:play');
     assert.equal(played.soundId, sound.body.id);
     assert.equal(played.which, 'join');
+});
+
+/** A server with the sounds module on and one sound set as both defaults. */
+async function withDefaultSounds(t) {
+    const h = await launch();
+    t.after(h.cleanup);
+    await h.call('POST', '/api/admin/modules/sounds/enable', { token: h.token });
+    const sound = await h.call('POST', '/api/sounds?name=Door', { token: h.token, raw: oggBytes() });
+    await h.call('PUT', `/api/sounds/${sound.body.id}/default`, { token: h.token, body: { which: 'join' } });
+    await h.call('PUT', `/api/sounds/${sound.body.id}/default`, { token: h.token, body: { which: 'leave' } });
+    const general = h.channels.find((c) => c.isDefault) ?? h.channels[0];
+    const away = h.channels.find((c) => c.kind === 'afk');
+    return { h, general, away };
+}
+
+/** Two round trips, so anything already on its way has had every chance to arrive. */
+async function settle(client) {
+    for (let i = 0; i < 2; i += 1) {
+        client.send('ping', { t: Date.now() });
+        await client.expect('pong');
+    }
+}
+
+// Sounds used to be wired only to sockets opening and closing. Moving between rooms,
+// picking a room from the lobby and the disconnect button all happen on a socket that
+// stays open, so all of them were silent — which is why the sounds seemed to come and go.
+
+test('moving between rooms sounds a departure in one and an arrival in the other', async (t) => {
+    const { h, general, away } = await withDefaultSounds(t);
+
+    const mover = await h.connect(await h.makeMember('mover'), general.id);
+    const behind = await h.connect(await h.makeMember('behind'), general.id);
+    const ahead = await h.connect(h.token, away.id);
+
+    mover.send('move', { channelId: away.id });
+
+    assert.equal((await behind.expect('sounds:play')).which, 'leave');
+    assert.equal((await ahead.expect('sounds:play')).which, 'join');
+});
+
+test('the disconnect button sounds a departure', async (t) => {
+    const { h, general } = await withDefaultSounds(t);
+
+    const leaver = await h.connect(await h.makeMember('leaver'), general.id);
+    const stayer = await h.connect(h.token, general.id);
+
+    leaver.send('leave');
+    const played = await stayer.expect('sounds:play');
+    assert.equal(played.which, 'leave');
+    assert.equal(played.username, 'leaver');
+});
+
+test('picking a room from the lobby sounds an arrival', async (t) => {
+    const { h, general } = await withDefaultSounds(t);
+
+    const host = await h.connect(h.token, general.id);
+    const reader = await h.connect(await h.makeMember('reader'), null, { autoJoin: false });
+    assert.equal(reader.joined.channel, null);
+
+    reader.send('move', { channelId: general.id });
+    const played = await host.expect('sounds:play');
+    assert.equal(played.which, 'join');
+    assert.equal(played.username, 'reader');
+});
+
+test('coming and going without a room is heard by nobody', async (t) => {
+    // Every roomless reader stands in "no room", so a sound aimed at the arrival's room
+    // used to reach all the others — for someone who had not joined anything.
+    const { h } = await withDefaultSounds(t);
+
+    const first = await h.connect(h.token, null, { autoJoin: false });
+    const second = await h.connect(await h.makeMember('second'), null, { autoJoin: false });
+    const passer = await h.connect(await h.makeMember('passer'), null, { autoJoin: false });
+    passer.ws.close();
+    await new Promise((res) => passer.ws.once('close', res));
+
+    for (const reader of [first, second]) {
+        await settle(reader);
+        assert.deepEqual(reader.inbox.filter((m) => m.type === 'sounds:play'), [], 'nobody arrived anywhere');
+    }
 });
 
 // ── detachability ────────────────────────────────────────────────────────────
