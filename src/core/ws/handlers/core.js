@@ -251,11 +251,25 @@ export function registerCoreWsHandlers({
         }
         peer.transports.clear();
 
+        // The room being left is told the way movePeer tells it, and before the upsert, so
+        // its clients drop whatever they hold of this peer and then refile them as standing
+        // nowhere. Each consumer's own closure notice is not that: it only reaches a listener
+        // the server still has a consumer for. A listener whose client held a stale one —
+        // the server's side long gone — was told nothing at all, so "Leave the room" and
+        // straight back in, the first thing anybody tries, changed nothing for exactly the
+        // listeners it was meant to fix.
+        toChannel(from, 'peer_left', { cid: peer.cid, userId: peer.userId, moved: true }, peer.cid);
+
+        const fromChannel = getChannel(db, from);
+        // Logged because its absence read as something else: a timeline showing somebody
+        // "moved to General from nowhere", with no departure anywhere before it.
+        ws.log.info({ evt: 'peer.left_room', from: fromChannel?.name ?? from },
+            `${peer.username} left ${fromChannel?.name ?? 'the room'}`);
+
         peer.channelId = null;
         send('left', { channel: null });
         // An upsert everyone understands: the same peer, now standing nowhere.
         announcePeer(peer);
-        const fromChannel = getChannel(db, from);
         if (fromChannel?.private) touchOccupancy(db, from);
         hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: null, reason: 'left' });
     });
@@ -367,10 +381,14 @@ export function registerCoreWsHandlers({
         });
         // ICE failure is how a network path dies mid-call. Surfacing it lets the client
         // rebuild rather than sitting in a call that is silently already over.
+        //
+        // To the peer's CURRENT socket, not through `send`: that one is bound to the socket
+        // that asked for this transport, and a resume moves the peer onto another. See the
+        // consumer's close handlers below for what that cost.
         transport.on('icestatechange', (state) => {
             if (state === 'disconnected' || state === 'closed') {
                 ws.log.warn({ evt: 'transport.ice', direction, state }, `ICE ${state} on ${direction}`);
-                send('transportFailed', { direction, state });
+                wsServer.send(peer.ws, 'transportFailed', { direction, state });
             }
         });
 
@@ -581,6 +599,23 @@ export function registerCoreWsHandlers({
             return fail(ws, 'cannot_consume', 'Your device cannot play this stream.');
         }
 
+        // A second consumer of the same producer is the same voice played twice, a few
+        // milliseconds apart in the listener's two jitter buffers — the "tin can" one listener
+        // hears while nobody else does. It is still served: refusing would need to know which
+        // of the two the client actually kept, and the client is the party that dedupes.
+        // Logged because the journal is where this shows up — two consume.started lines for
+        // one pair, 41ms apart, were the first sign of it — and a named event can be counted.
+        const already = [...peer.consumers.values()]
+            .some((c) => !c.closed && c.producerId === producer.id);
+        if (already) {
+            ws.log.warn({
+                evt: 'consume.duplicate',
+                listener: peer.username,
+                speaker: target.username,
+                slot: msg.slot,
+            }, `${peer.username} asked for ${target.username}'s ${msg.slot} again while already receiving it`);
+        }
+
         const consumer = await transport.consume({
             producerId: producer.id,
             rtpCapabilities: msg.rtpCapabilities,
@@ -592,18 +627,25 @@ export function registerCoreWsHandlers({
         });
 
         peer.consumers.set(consumer.id, consumer);
-        consumer.on('transportclose', () => {
+        // Told, not just dropped. Without this the client keeps the consumer in its own map,
+        // and consume()'s duplicate guard then refuses to rebuild it — so the server's own
+        // reconciler could re-announce the producer for ever and the listener stayed
+        // permanently deaf to that one person, with no error anywhere.
+        //
+        // And told on the peer's CURRENT socket. These fire long after the request that set
+        // them up, and `send` is bound to the socket that made it. A resume moves the peer
+        // onto a new socket and leaves every closure here pointing at the old one, where
+        // send() drops the frame without a word. So after any blip, every consumer a listener
+        // already held reported its closure to nobody — the other road to the deafness
+        // described above, and the one that fits what was seen: ten minutes of
+        // re-announcements to the two listeners whose lines kept dropping, while everyone
+        // else heard the speaker fine.
+        const tellClosed = () => {
             peer.consumers.delete(consumer.id);
-            // Told, not just dropped. Without this the client keeps the consumer in its
-            // own map, and consume()'s duplicate guard then refuses to rebuild it — so the
-            // server's own reconciler could re-announce the producer for ever and the
-            // listener stayed permanently deaf to that one person, with no error anywhere.
-            send('consumerClosed', { consumerId: consumer.id, cid: target.cid, slot: msg.slot });
-        });
-        consumer.on('producerclose', () => {
-            peer.consumers.delete(consumer.id);
-            send('consumerClosed', { consumerId: consumer.id, cid: target.cid, slot: msg.slot });
-        });
+            wsServer.send(peer.ws, 'consumerClosed', { consumerId: consumer.id, cid: target.cid, slot: msg.slot });
+        };
+        consumer.on('transportclose', tellClosed);
+        consumer.on('producerclose', tellClosed);
 
         // Scores are reported against NAMES, because "consumer 4f2a scored 3" is a number
         // nobody can act on, and "ada is receiving grace badly" is a thing to go and look

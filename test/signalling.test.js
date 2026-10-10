@@ -604,3 +604,79 @@ test('a resume tells the room nothing, because nothing happened', async (t) => {
     const churn = watcher.inbox.filter((m) => ['peer_joined', 'peer_left', 'sounds:play'].includes(m.type));
     assert.deepEqual(churn, [], 'nobody arrived and nobody left');
 });
+
+/** An Opus producer the router accepts with no browser behind it. */
+const OPUS = {
+    codecs: [{
+        mimeType: 'audio/opus', payloadType: 111, clockRate: 48000, channels: 2,
+        parameters: {}, rtcpFeedback: [],
+    }],
+    headerExtensions: [],
+    encodings: [{ ssrc: 11223344 }],
+    rtcp: { cname: 'weave-test' },
+};
+
+test('a consumer closed after a resume is reported on the socket that resumed', async (t) => {
+    // The deafness from the field. A listener's line blipped and it resumed, and from then on
+    // every consumerClosed for the consumers it already held went to the socket it had given
+    // up on, where it was dropped without a word. Its client kept a consumer of a producer
+    // that no longer existed, and refused ten minutes of re-announcements because of it.
+    const h = await launch();
+    t.after(h.cleanup);
+    const room = h.channels.find((x) => x.allowVoice).id;
+
+    const speaker = await h.connect();
+    const spoke = await join(speaker, h.adminToken, room);
+    speaker.send('createTransport', { direction: 'send' });
+    await speaker.expect('transportCreated');
+    speaker.send('produce', { slot: 'audio', kind: 'audio', rtpParameters: OPUS });
+    await speaker.expect('produced');
+
+    const memberToken = await h.makeMember('listener');
+    const listener = await h.connect();
+    const first = await join(listener, memberToken, room);
+    listener.send('createTransport', { direction: 'recv' });
+    await listener.expect('transportCreated');
+    listener.send('consume', { cid: spoke.self.cid, slot: 'audio', rtpCapabilities: first.rtpCapabilities });
+    const consumed = await listener.expect('consumed');
+
+    const { c: back, joined } = await resume(h, memberToken, room, first.resumeKey);
+    assert.equal(joined.resumed, true);
+
+    speaker.send('closeProducer', { slot: 'audio' });
+    const closed = await back.expect((m) => m.type === 'consumerClosed' && m.consumerId === consumed.consumerId);
+    assert.equal(closed.cid, spoke.self.cid, 'and it says whose stream it was');
+    assert.equal(closed.slot, 'audio');
+});
+
+test('leaving a room tells the people in it, before refiling the leaver as standing nowhere', async (t) => {
+    // "Leave the room" and straight back in is what somebody does when a listener cannot hear
+    // them. The listener was only ever told through each consumer's own closure notice, and a
+    // client holding a stale consumer had no live one for the server to close — so it heard
+    // nothing, never let go, and refused the fresh producer that followed. A move already says
+    // peer_left to the room being left; a leave now says the same.
+    const h = await launch();
+    t.after(h.cleanup);
+    const room = h.channels.find((x) => x.allowVoice).id;
+
+    const stayer = await h.connect();
+    await join(stayer, h.adminToken, room);
+    const memberToken = await h.makeMember('leaver');
+    const leaver = await h.connect();
+    const arrived = await join(leaver, memberToken, room);
+    await stayer.expect('peer_joined');
+
+    leaver.send('leave');
+    await leaver.expect('left');
+    // One round trip, so both frames the leave sent this way have arrived before reading.
+    stayer.send('ping', { t: Date.now() });
+    await stayer.expect('pong');
+
+    const seen = stayer.inbox.filter((m) => m.type === 'peer_left' || m.type === 'peer_joined');
+    assert.deepEqual(seen.map((m) => m.type), ['peer_left', 'peer_joined'],
+        'consumers dropped first, then the same person refiled');
+    assert.equal(seen[0].cid, arrived.self.cid);
+    assert.equal(seen[0].moved, true, 'a departure from the room, not from the server');
+    assert.equal(seen[1].peer.cid, arrived.self.cid);
+    assert.equal(seen[1].peer.channelId, null, 'still connected, standing nowhere');
+});
