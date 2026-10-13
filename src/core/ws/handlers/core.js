@@ -50,6 +50,15 @@ export const KICK_CLOSE_CODE = 4006;
 export const SUPERSEDED_CLOSE_CODE = 4002;
 
 /**
+ * How long a superseded socket gets to answer its close frame before it is simply cut.
+ *
+ * A live socket answers in a round trip. One on a dead path never does, and the ws library
+ * would otherwise hold it for thirty seconds and then report a 1006 that looks exactly like
+ * somebody else disconnecting.
+ */
+const SUPERSEDED_LINGER_MS = 2_000;
+
+/**
  * The account's sessions were revoked — it changed its own password on another device.
  *
  * Deliberately NOT 4003. That one is in the set the client treats as final and reads out as
@@ -156,6 +165,10 @@ export function registerCoreWsHandlers({
         const prior = peers.claim(msg.resume, session.userId);
         if (prior && prior.channelId === (channel?.id ?? null)) {
             const outgoing = prior.ws;
+            // How long the peer stood without a socket, when its old one had already closed.
+            // Read before rebind clears it. Absent when the old socket was still open here,
+            // which is the client noticing a dead path before the server did.
+            const detachedForMs = prior.detached ? Date.now() - prior.detached.at : undefined;
             // Marked, and only then replaced. Nothing broadcast in the moment between
             // should go down a socket we have already given up on, and the peer must
             // belong to its NEW socket before the old one's close arrives — a close read
@@ -164,11 +177,18 @@ export function registerCoreWsHandlers({
             ws.session = session;
             const resumeKey = peers.rebind(prior, ws);
             try { outgoing.close(SUPERSEDED_CLOSE_CODE, 'resumed on another socket'); } catch { /* going anyway */ }
+            // And cut, if the close is not answered promptly. A client only resumes after
+            // giving up on its old socket, so whatever path that socket was on is usually
+            // dead, and the close handshake then waits out the ws library's thirty-second
+            // timeout before ending as a 1006 — which read in the log as a second
+            // disconnect, exactly thirty seconds after every resume.
+            setTimeout(() => { try { outgoing.terminate(); } catch { /* already gone */ } },
+                SUPERSEDED_LINGER_MS).unref?.();
 
             touchLastSeen(db, session.userId);
 
             ws.log = log.child({ cid: ws.cid, user: session.username });
-            ws.log.info({ evt: 'peer.resumed', channel: channel?.name ?? '(nowhere)' },
+            ws.log.info({ evt: 'peer.resumed', channel: channel?.name ?? '(nowhere)', detachedForMs },
                 `${session.username} resumed in ${channel ? channel.name : 'no room'}`);
 
             send('joined', {
@@ -188,6 +208,13 @@ export function registerCoreWsHandlers({
             hooks.emit(HOOKS.PEER_JOIN, { peer: prior, channel, resumed: true });
             return;
         }
+
+        // A claim that cannot be honoured still names a peer its client has walked away
+        // from: a client only presents its key from a NEW socket, and it never drives two.
+        // Left standing, that peer is a second copy of this person beside the one about to
+        // be made — for the whole grace window if its socket had dropped, or until the
+        // heartbeat sweep if it had not.
+        if (prior) peers.disconnect(prior, SUPERSEDED_CLOSE_CODE, 'replaced by a fresh join');
 
         ws.session = session;
         const peer = peers.add(ws, session, channel?.id ?? null, protocol);
@@ -838,7 +865,9 @@ export function registerCoreWsHandlers({
                 until: record.expiresAt,
                 retryAfterMs: KICK_COOLDOWN_MS,
             });
-            try { peer.ws.close(KICK_CLOSE_CODE, 'kicked'); } catch { /* going anyway */ }
+            // Ended here rather than by the socket's close, so a peer whose line had
+            // already dropped — held for its client to come back — goes now as well.
+            peers.disconnect(peer, KICK_CLOSE_CODE, 'kicked');
             closed += 1;
         }
 

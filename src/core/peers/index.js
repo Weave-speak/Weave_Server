@@ -27,10 +27,16 @@ const newResumeKey = () => randomBytes(18).toString('base64url');
 export class PeerRegistry {
     #peers = new Map();     // cid -> peer
     #log;
+    // What a departure tells everyone else. Injected rather than imported, because saying it
+    // takes the socket server and the hook bus, both of which are built after this is.
+    #onEnd = () => {};
 
     constructor(log) {
         this.#log = log;
     }
+
+    /** Replaceable, because what announces a departure is built after the registry is. */
+    set onEnd(fn) { this.#onEnd = typeof fn === 'function' ? fn : () => {}; }
 
     add(ws, session, channelId, protocol) {
         const peer = {
@@ -71,6 +77,9 @@ export class PeerRegistry {
             // building a new one. It never leaves publicView, and it is rotated on every
             // use: a key that has been spent cannot be replayed by anything that saw it.
             resumeKey: newResumeKey(),
+            // Set while the socket under this peer has dropped and the peer is being held for
+            // its client to come back: { at, cancel }. See departure.js.
+            detached: null,
         };
         this.#peers.set(ws.cid, peer);
         return peer;
@@ -104,6 +113,9 @@ export class PeerRegistry {
      * they are ICE/DTLS over UDP and never depended on the socket that asked for them.
      */
     rebind(peer, ws) {
+        // Back inside the grace window, so the timer that would have ended it must not.
+        peer.detached?.cancel?.();
+        peer.detached = null;
         ws.cid = peer.cid;
         peer.ws = ws;
         peer.resumeKey = newResumeKey();
@@ -121,11 +133,40 @@ export class PeerRegistry {
         const peer = this.#peers.get(cid);
         if (!peer) return null;
 
+        // The record itself stays, so whoever announces this can say how long it waited.
+        peer.detached?.cancel?.();
         for (const transport of peer.transports.values()) {
             try { transport.close(); } catch { /* already closed */ }
         }
         this.#peers.delete(cid);
         return peer;
+    }
+
+    /**
+     * Remove a peer AND tell everyone it went. The one way a peer stops existing.
+     *
+     * `reason` is for the log: 'closed' (its socket said goodbye), 'expired' (it dropped and
+     * nobody came back for it), or whatever a deliberate disconnect names.
+     */
+    end(cid, reason = 'closed') {
+        const peer = this.remove(cid);
+        if (!peer) return null;
+        this.#onEnd(peer, reason);
+        return peer;
+    }
+
+    /**
+     * Close a peer's socket on the server's own account, and end the peer now.
+     *
+     * Not left to the socket's close event, for two reasons. A peer that is already detached
+     * has no live socket to close, so closing one would do nothing and leave a kicked person
+     * listed for the whole grace window. And a live socket whose client has died answers the
+     * close frame with silence, which ends as a 1006 thirty seconds later — exactly the code
+     * that means "hold this peer, they may be back".
+     */
+    disconnect(peer, code, reason) {
+        try { peer.ws.close(code, reason); } catch { /* going anyway */ }
+        return this.end(peer.cid, reason);
     }
 
     /** Everyone in a channel, optionally excluding one connection. */
@@ -160,7 +201,7 @@ export class PeerRegistry {
             // Narrowing to one session, for signing out a single device rather than all
             // of them. Still only ever this account's connections.
             if (sessionId && peer.sessionId !== sessionId) continue;
-            try { peer.ws.close(code, reason); } catch { /* going anyway */ }
+            this.disconnect(peer, code, reason);
             closed += 1;
         }
         return closed;

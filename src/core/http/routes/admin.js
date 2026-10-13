@@ -433,9 +433,10 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
         json(200, { ok: true, message: 'Everything is gone. The server is back at first run.' });
 
         setImmediate(() => {
-            // Every live connection is cut before the ground vanishes beneath it.
+            // Every live connection is cut before the ground vanishes beneath it — and every
+            // peer ended with it, including one only being held for a client to come back.
             for (const peer of peers.all) {
-                try { peer.ws.close(4005, 'server wiped'); }
+                try { peers.disconnect(peer, 4005, 'server wiped'); }
                 catch { /* going regardless */ }
             }
 

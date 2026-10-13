@@ -7,6 +7,25 @@ All notable changes to Weave Server are recorded here. The format follows
 The server serves the most recent entries to clients through `GET /api/changelog`,
 so write them for the people using Weave, not only for developers.
 
+## [0.1.36] - 2026-10-13
+
+### Fixed
+- **A dropped connection no longer ends your screen share.** When the connection to the
+  server dropped — even for a second — the server forgot you at once: your share stopped for
+  everyone watching it, the room heard you leave and come back, and you had to pick your
+  window again. Your audio and video never needed that; they travel separately from the
+  connection that dropped. The server now holds your place for a minute, and when the app
+  reconnects inside it you simply carry on, with nothing rebuilt and nothing announced.
+  Leaving on purpose, quitting the app, a kick or a signed-out session still take effect at
+  once.
+
+- **Quieter, more truthful logs around reconnections.** A reconnection used to be followed,
+  exactly thirty seconds later, by a "WebSocket closed (1006)" line that looked like a second
+  disconnect; it was only the abandoned connection being cleaned up, and now goes within two
+  seconds and is marked `superseded`. Losing a connection, coming back and leaving each have
+  a line of their own: `peer.detached`, `peer.resumed` (with how long it took) and
+  `peer.left` (with why).
+
 ## [0.1.33] - 2026-09-12
 
 ### Changed

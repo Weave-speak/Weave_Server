@@ -29,6 +29,7 @@ import { ensureDefaults, listChannels, visibleChannels } from './core/channels/i
 import { registerCoreRoutes } from './core/http/routes/index.js';
 import { createSfu } from './core/sfu/index.js';
 import { PeerRegistry } from './core/peers/index.js';
+import { createDeparture } from './core/peers/departure.js';
 import { registerCoreWsHandlers } from './core/ws/handlers/core.js';
 import { movePeer } from './core/peers/move.js';
 import { getChannel } from './core/channels/index.js';
@@ -78,29 +79,30 @@ export async function start(env = process.env) {
     // ── Media ────────────────────────────────────────────────────────────────
     const sfu = await createSfu({ config, log, hooks });
     const peers = new PeerRegistry(log);
+    // A dropped socket holds its peer for a grace window rather than ending it, so the client
+    // can claim it back with every transport and producer intact. See departure.js.
+    const departure = createDeparture({ peers });
 
     const ws = createWsServer({
         registry: wsRegistry,
         log,
         config,
-        onDisconnect: (sock) => {
-            // A socket that was SUPERSEDED closed because the same client came back on a
-            // new one, and the peer moved with it. Tearing it down here would close the
-            // transports the reconnection just saved and tell the room somebody left who
-            // is standing right there — so the peer is only removed by the socket that
-            // still holds it.
-            const standing = peers.get(sock.cid);
-            if (!standing || standing.ws !== sock) return;
-            const peer = peers.remove(sock.cid);
-            if (!peer) return;
-            // Closing the transports above stops the media; this tells EVERYONE — every
-            // sidebar shows every room, and a roomless reader going offline has to
-            // disappear from the members list too, which a room-scoped frame never did.
-            ws.broadcast('peer_left', { cid: peer.cid, userId: peer.userId },
-                (other) => Boolean(peers.get(other.cid)));
-            hooks.emit(HOOKS.PEER_LEAVE, { peer });
-        },
+        onDisconnect: (sock, code) => departure.onSocketClosed(sock, code),
     });
+
+    peers.onEnd = (peer, reason) => {
+        // Removing the peer closed its transports, which stops the media; this tells
+        // EVERYONE — every sidebar shows every room, and a roomless reader going offline
+        // has to disappear from the members list too, which a room-scoped frame never did.
+        ws.broadcast('peer_left', { cid: peer.cid, userId: peer.userId },
+            (other) => Boolean(peers.get(other.cid)));
+        // Logged because a departure used to leave no line of its own, only a socket close
+        // that read the same whether the person had gone or was about to come straight back.
+        const detachedForMs = peer.detached ? Date.now() - peer.detached.at : undefined;
+        (peer.ws?.log ?? log).info({ evt: 'peer.left', reason, detachedForMs },
+            `${peer.username} left (${reason})`);
+        hooks.emit(HOOKS.PEER_LEAVE, { peer });
+    };
 
     // Small shims so the module context can grant HTTP/WS registration without handing
     // a module the registry itself.
@@ -243,6 +245,7 @@ export async function start(env = process.env) {
         stopAddressWatch();
         stopMediaReconcile();
         stopMuteExpiry();
+        departure.stop();
         await ws.close();
         await sfu.close();
         await new Promise((resolve) => server.close(resolve));

@@ -82,6 +82,40 @@ test('rebinding keeps the peer and everything on it, and only moves the socket',
     assert.equal(peers.claim(issued, 'u-chris'), peer);
 });
 
+test('rebinding and removing both stand down a held peer\'s grace timer', () => {
+    // A peer whose socket dropped is held with a timer that ends it. Coming back must
+    // cancel that timer, or the peer is ended out from under the client that just resumed
+    // it; and removing it any other way must cancel it too, or it fires on nothing.
+    const peers = registry();
+    let cancelled = 0;
+    const hold = () => ({ at: Date.now(), cancel: () => { cancelled += 1; } });
+
+    const peer = peers.add(socket('AAA'), session('u-chris'), 'hall', 1);
+    assert.equal(peer.detached, null, 'a fresh peer is not being held');
+
+    peer.detached = hold();
+    peers.rebind(peer, socket('BBB'));
+    assert.equal(cancelled, 1);
+    assert.equal(peer.detached, null);
+
+    peer.detached = hold();
+    peers.remove('AAA');
+    assert.equal(cancelled, 2);
+});
+
+test('ending a peer removes it and says so exactly once', () => {
+    const peers = registry();
+    const said = [];
+    peers.onEnd = (peer, reason) => said.push([peer.cid, reason]);
+
+    peers.add(socket('AAA'), session('u-chris'), 'hall', 1);
+    peers.end('AAA', 'expired');
+    peers.end('AAA', 'expired');
+
+    assert.equal(peers.get('AAA'), undefined);
+    assert.deepEqual(said, [['AAA', 'expired']]);
+});
+
 test('a peer that has been removed cannot be claimed back', () => {
     const peers = registry();
     const peer = peers.add(socket('AAA'), session('u-chris'), 'hall', 1);

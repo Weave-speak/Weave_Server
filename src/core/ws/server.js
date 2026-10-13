@@ -139,8 +139,13 @@ export function createWsServer({ registry, log, config, onDisconnect }) {
 
         ws.on('close', (code) => {
             sockets.delete(ws);
-            ws.log.info({ evt: 'ws.close', code, deliberate: code === LEAVE_CLOSE_CODE },
-                `WebSocket closed (${code})`);
+            // `superseded` marks the socket a resume replaced. Its close is the end of a
+            // connection the client had already given up on, not anybody leaving, and
+            // without the flag it read in the log as a second disconnect.
+            ws.log.info({
+                evt: 'ws.close', code, deliberate: code === LEAVE_CLOSE_CODE,
+                ...(ws.superseded ? { superseded: true } : {}),
+            }, `WebSocket closed (${code})`);
             try {
                 onDisconnect?.(ws, code);
             } catch (err) {
