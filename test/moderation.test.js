@@ -23,7 +23,7 @@ import { WebSocket } from 'ws';
 import { freePort, startWithRetry } from './helpers.js';
 
 import {
-    activeMute, activeKick, mute, unmute, recordKick, expiredMutes, settleExpired,
+    activeMute, activeKick, mute, unmute, recordKick, expiredMutes, settleExpired, listActive,
 } from '../src/core/moderation/index.js';
 import { createEnforcer } from '../src/core/moderation/enforce.js';
 import { watchMuteExpiry } from '../src/core/moderation/sweep.js';
@@ -200,6 +200,37 @@ test('a kick is in force for its cooldown and no longer', () => {
     assert.equal(activeKick(db, 'u1', t0 + 61_000), null);
 });
 
+test('what is in force can be listed, with names, and nothing lifted or run out', () => {
+    // Its own table shape: the list joins users for names, which the store tests above
+    // never needed.
+    const db = new Database(':memory:');
+    db.exec(`
+        CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, display_name TEXT);
+        CREATE TABLE moderation (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT,
+            by_user_id TEXT, at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at INTEGER, lifted_at INTEGER, lifted_by TEXT);
+        INSERT INTO users VALUES ('a', 'admin', 'Admin'), ('u1', 'kes', 'Kestrel'),
+                                 ('u2', 'wren', NULL), ('u3', 'moth', NULL), ('u4', 'roan', NULL);
+    `);
+    const t0 = 1_000_000;
+    mute(db, { userId: 'u1', byUserId: 'a', minutes: null, now: t0 });    // open-ended
+    mute(db, { userId: 'u2', byUserId: 'a', minutes: 5, now: t0 });       // ends at +5m
+    recordKick(db, { userId: 'u3', byUserId: 'a', cooldownMs: 60_000, now: t0 });
+    mute(db, { userId: 'u4', minutes: 60, now: t0 });
+    unmute(db, { userId: 'u4', now: t0 + 1000 });                          // lifted
+
+    const list = listActive(db, t0 + 30_000);
+    assert.deepEqual(list.map((r) => r.username), ['kes', 'moth', 'wren'],
+        'open-ended first, then whatever ends soonest; nothing lifted');
+    assert.equal(list[0].displayName, 'Kestrel');
+    assert.equal(list[0].byUsername, 'admin');
+    assert.equal(list[1].action, 'kick');
+
+    assert.deepEqual(listActive(db, t0 + 10 * 60_000).map((r) => r.username), ['kes'],
+        'the kick cooldown and the five-minute mute have both run out');
+});
+
 // ── the enforcer ─────────────────────────────────────────────────────────────
 
 const fakeProducer = () => {
@@ -341,6 +372,33 @@ test('an administrator can lift a server mute, and everyone is told', async (t) 
 
     const back = await h.connect(kes.token);
     assert.equal(back.joined.self.forceMuted, false);
+});
+
+test('an administrator can see every restriction in force without being in a room with it', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const admin = await h.connect(h.adminToken);
+
+    // Kestrel is not even connected: a mute is on the account, not on a socket.
+    admin.send('serverMute', { userId: kes.user.id, minutes: 60 });
+    await admin.expect('serverMuteChanged');
+
+    const listed = await h.call('GET', '/api/admin/moderation', { token: h.adminToken });
+    assert.equal(listed.status, 200);
+    const [entry] = listed.body.restrictions;
+    assert.equal(entry.username, 'kestrel');
+    assert.equal(entry.action, 'mute');
+    assert.equal(entry.byUsername, 'admin');
+    assert.ok(entry.expiresAt > Date.now());
+
+    // Not for members: who is muted is an administrator's business.
+    assert.equal((await h.call('GET', '/api/admin/moderation', { token: kes.token })).status, 403);
+
+    // Lifted the usual way, and gone from the list.
+    admin.send('serverMute', { userId: kes.user.id, muted: false });
+    await admin.expect('serverMuteChanged');
+    assert.deepEqual((await h.call('GET', '/api/admin/moderation', { token: h.adminToken })).body.restrictions, []);
 });
 
 test('administrators cannot server-mute or kick one another, or themselves', async (t) => {

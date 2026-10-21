@@ -1,0 +1,11 @@
+{
+  "id": "bubbles",
+  "name": "Bubbles",
+  "version": "1.0.0",
+  "description": "Photo bubbles that drift over the chat, each with a small conversation of its own. An administrator makes them; a few float at a time.",
+  "requires": [],
+  "defaultEnabled": true,
+  "features": [
+    "bubbles"
+  ]
+}

@@ -20,6 +20,7 @@ import { revokeAllForUser } from '../../auth/index.js';
 import { checkIntegrity, migrationStatus } from '../../../db/index.js';
 import { audit as writeAudit } from '../../admin/audit.js';
 import { tailLog } from '../../log/tail.js';
+import { listActive as activeRestrictions } from '../../moderation/index.js';
 
 /**
  * Columns never sent to a browser and never accepted from one.
@@ -395,6 +396,14 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
         notifyRoles(user.id);
         json(200, { ok: true });
     }, { maxBytes: 1_000 });
+
+    // ── restrictions in force ────────────────────────────────────────────────
+    // Read-only. Lifting a mute goes through the WebSocket `serverMute` with muted:false,
+    // which is the one path that also un-pauses the person's microphone and tells the room;
+    // a second, HTTP way to lift one would have to repeat both or quietly skip them.
+    admin('GET', '/api/admin/moderation', ({ json }) => {
+        json(200, { restrictions: activeRestrictions(db) });
+    });
 
     // ── audit log ────────────────────────────────────────────────────────────
     admin('GET', '/api/admin/audit', ({ query, json }) => {

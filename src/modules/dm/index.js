@@ -13,26 +13,11 @@
 import crypto from 'node:crypto';
 import { createChannel, deleteChannel, addMember } from '../../core/channels/index.js';
 import { HOOKS } from '../../core/hooks/index.js';
+import { cleanAttachment } from '../../core/media/attachment.js';
 
 const PAGE_DEFAULT = 50;
 const PAGE_MAX = 100;
 
-
-/** Same claim-shape as text-chat's: id + name in, server-derived URL out. */
-function cleanAttachment(raw) {
-    if (!raw || typeof raw !== 'object') return null;
-    const id = String(raw.id ?? '');
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) return null;
-    const mime = String(raw.mime ?? '');
-    if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) return null;
-    const bytes = Number(raw.bytes);
-    const name = String(raw.name ?? 'image').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80) || 'image';
-    return {
-        id, mime, name,
-        url: `/api/uploads/${id}`,
-        bytes: Number.isFinite(bytes) && bytes > 0 ? Math.min(bytes, 50_000_000) : 0,
-    };
-}
 
 export function register(ctx) {
     ctx.db.migrate();

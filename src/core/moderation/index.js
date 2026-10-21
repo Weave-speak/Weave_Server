@@ -87,6 +87,29 @@ export function recordKick(db, {
 }
 
 /**
+ * Everything in force right now, across every account, for an administrator to look at.
+ *
+ * The record existed and nothing could read it back: every mute and kick was applied by
+ * right-clicking somebody in a room, so an administrator not in a room with them could
+ * neither see nor lift it. Open-ended mutes first, then whatever ends soonest.
+ */
+export function listActive(db, now = Date.now()) {
+    return db.prepare(`
+        SELECT m.*, u.username, u.display_name AS displayName, b.username AS byUsername
+        FROM moderation m
+        JOIN users u ON u.id = m.user_id
+        LEFT JOIN users b ON b.id = m.by_user_id
+        WHERE m.lifted_at IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?)
+        ORDER BY m.expires_at IS NULL DESC, m.expires_at ASC
+    `).all(now).map((row) => ({
+        ...shape(row),
+        username: row.username,
+        displayName: row.displayName,
+        byUsername: row.byUsername ?? null,
+    }));
+}
+
+/**
  * Mutes that have run out but are not marked lifted yet.
  *
  * Expiry is evaluated in the query rather than stored as a flag, so this is only about

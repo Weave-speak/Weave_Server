@@ -18,6 +18,13 @@ import { HOOKS } from '../../core/hooks/index.js';
 const MAX_BYTES = 2 * 1024 * 1024;
 const MAX_SOUNDS = 100;
 
+/**
+ * How long after the birthday person arrives their sound plays. The web app's five
+ * seconds: long enough for their own join sound to finish and for them to have actually
+ * landed in the room, so it is heard as a greeting rather than as noise on the door.
+ */
+export const BIRTHDAY_DELAY_MS = 5000;
+
 /** Container sniffing, same reasoning as uploads: the declared type is a claim. */
 const SIGNATURES = [
     { ext: 'ogg', mime: 'audio/ogg', test: (b) => b.subarray(0, 4).toString('ascii') === 'OggS' },
@@ -62,6 +69,28 @@ export function register(ctx) {
         label: 'Default leave sound',
         help: 'Used for anyone who has not chosen one.',
     }, '');
+    // The web app's birthday: an administrator names a person and a sound, and the room
+    // hears it when that person turns up. Set from the client's Sounds screen, which checks
+    // both ids; empty strings mean nobody, as with the defaults above.
+    ctx.settings.define('birthdayUserId', {
+        type: 'string',
+        label: 'Birthday person',
+        help: 'Their room hears the birthday sound when they arrive, once per sign-in.',
+    }, '');
+    ctx.settings.define('birthdaySound', {
+        type: 'string',
+        label: 'Birthday sound',
+        help: 'Played for the birthday person.',
+    }, '');
+
+    // Sign-in sessions already greeted for the current birthday. In memory on purpose: it
+    // answers "once per sign-in", and a restart is a fair moment to sing again.
+    const greeted = new Set();
+    const birthdayTimers = new Set();
+    ctx.onUnload(() => {
+        for (const timer of birthdayTimers) clearTimeout(timer);
+        birthdayTimers.clear();
+    });
 
     // ── the library ──────────────────────────────────────────────────────────
     ctx.http.route('GET', '/api/sounds', ({ json }) => {
@@ -109,6 +138,7 @@ export function register(ctx) {
         // A deleted default is no default, not a dangling id nobody can hear.
         if (ctx.settings.get('defaultJoinSound') === params.id) ctx.settings.set('defaultJoinSound', '');
         if (ctx.settings.get('defaultLeaveSound') === params.id) ctx.settings.set('defaultLeaveSound', '');
+        if (ctx.settings.get('birthdaySound') === params.id) ctx.settings.set('birthdaySound', '');
 
         json(200, { ok: true });
     }, { auth: 'admin' });
@@ -153,23 +183,88 @@ export function register(ctx) {
         });
     });
 
-    ctx.http.route('PUT', '/api/sounds/me', ({ body, session, json }) => {
-        const exists = (id) => id === null
-            || db.prepare('SELECT 1 FROM sounds WHERE id = ?').get(id);
+    const soundExists = (id) => id === null
+        || Boolean(db.prepare('SELECT 1 FROM sounds WHERE id = ?').get(id));
 
+    /**
+     * Write one account's join and leave sounds. Null means "the default", exactly as an
+     * absent row does — which is what GET /api/sounds/me and the player both read it as.
+     */
+    const writeChoice = (userId, body) => {
         const joinSound = body?.joinSound ?? null;
         const leaveSound = body?.leaveSound ?? null;
-        if (!exists(joinSound) || !exists(leaveSound)) {
+        if (!soundExists(joinSound) || !soundExists(leaveSound)) {
             throw new HttpError(400, 'That sound is not on this server.');
         }
-
         db.prepare(`
             INSERT INTO sound_choices (user_id, join_sound, leave_sound) VALUES (?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET join_sound = excluded.join_sound, leave_sound = excluded.leave_sound
-        `).run(session.userId, joinSound, leaveSound);
+        `).run(userId, joinSound, leaveSound);
+        return { joinSound, leaveSound };
+    };
 
-        json(200, { joinSound, leaveSound });
+    ctx.http.route('PUT', '/api/sounds/me', ({ body, session, json }) => {
+        json(200, writeChoice(session.userId, body));
     }, { maxBytes: 1_000 });
+
+    // ── an administrator choosing for somebody ───────────────────────────────
+    // The web app's "Configurations" screen: an admin gives a person their sound, rather
+    // than waiting for them to find the setting. It writes the same row the person's own
+    // choice does, so whichever of them chose last is what plays — and the person can
+    // still change it afterwards. Nothing here is a lock.
+    const userById = db.prepare('SELECT id, username, display_name AS displayName FROM users WHERE id = ?');
+
+    ctx.http.route('GET', '/api/sounds/users', ({ json }) => {
+        json(200, {
+            users: db.prepare(`
+                SELECT u.id, u.username, u.display_name AS displayName,
+                       c.join_sound AS joinSound, c.leave_sound AS leaveSound
+                FROM users u LEFT JOIN sound_choices c ON c.user_id = u.id
+                ORDER BY COALESCE(u.display_name, u.username) COLLATE NOCASE
+            `).all(),
+        });
+    }, { auth: 'admin' });
+
+    ctx.http.route('PUT', '/api/sounds/users/:id', ({ params, body, session, json, log }) => {
+        const user = userById.get(params.id);
+        if (!user) throw new HttpError(404, 'No such account.');
+        const written = writeChoice(user.id, body);
+        log.info({ evt: 'sound.assigned', user: user.username },
+            `${session.username} set ${user.username}'s join and leave sounds`);
+        json(200, { userId: user.id, ...written });
+    }, { auth: 'admin', maxBytes: 1_000 });
+
+    // ── the birthday ─────────────────────────────────────────────────────────
+    const birthdayView = () => {
+        const userId = ctx.settings.get('birthdayUserId') || null;
+        const soundId = ctx.settings.get('birthdaySound') || null;
+        return { userId, soundId, user: userId ? userById.get(userId) ?? null : null };
+    };
+
+    ctx.http.route('GET', '/api/sounds/birthday', ({ json }) => {
+        json(200, birthdayView());
+    }, { auth: 'admin' });
+
+    ctx.http.route('PUT', '/api/sounds/birthday', ({ body, session, json, log }) => {
+        const userId = body?.userId ? String(body.userId) : null;
+        const soundId = body?.soundId ? String(body.soundId) : null;
+        // Both or neither: a person with no sound is a birthday nobody hears, and a sound
+        // with nobody is a setting that does nothing. Clearing is both empty.
+        if (Boolean(userId) !== Boolean(soundId)) {
+            throw new HttpError(400, 'Choose both a person and a sound, or clear both.');
+        }
+        if (userId && !userById.get(userId)) throw new HttpError(404, 'No such account.');
+        if (soundId && !soundExists(soundId)) throw new HttpError(400, 'That sound is not on this server.');
+
+        ctx.settings.set('birthdayUserId', userId ?? '');
+        ctx.settings.set('birthdaySound', soundId ?? '');
+        // A new birthday is a new occasion: anybody already greeted for the last one is
+        // not thereby greeted for this one.
+        greeted.clear();
+        log.info({ evt: 'sound.birthday', set: Boolean(userId) },
+            `${session.username} ${userId ? 'set' : 'cleared'} the birthday`);
+        json(200, birthdayView());
+    }, { auth: 'admin', maxBytes: 1_000 });
 
     // ── playing ──────────────────────────────────────────────────────────────
     const choice = db.prepare('SELECT join_sound AS joinSound, leave_sound AS leaveSound FROM sound_choices WHERE user_id = ?');
@@ -216,9 +311,40 @@ export function register(ctx) {
             });
     };
 
+    /**
+     * The birthday person has arrived somewhere: once per sign-in, and a few seconds later,
+     * to whatever room they are in by then — including them, because it is for them.
+     *
+     * Wherever they ARE when it fires, not where they were: somebody who walks in and
+     * straight back out should not have their song played to the room they left. And not
+     * at all if they have gone, or stand nowhere, or the occasion changed meanwhile.
+     */
+    const greetBirthday = (peer) => {
+        const userId = ctx.settings.get('birthdayUserId');
+        const soundId = ctx.settings.get('birthdaySound');
+        if (!userId || !soundId || peer.userId !== userId) return;
+        const occasion = peer.sessionId ?? peer.cid;
+        if (greeted.has(occasion)) return;
+        greeted.add(occasion);
+
+        const timer = setTimeout(() => {
+            birthdayTimers.delete(timer);
+            if (ctx.settings.get('birthdayUserId') !== userId || ctx.settings.get('birthdaySound') !== soundId) return;
+            const now = ctx.peers.get(peer.cid);
+            if (!now?.channelId) return;
+            ctx.ws.broadcast('play', { soundId, which: 'birthday', cid: now.cid, username: now.username },
+                (sock) => ctx.peers.get(sock.cid)?.channelId === now.channelId);
+        }, BIRTHDAY_DELAY_MS);
+        birthdayTimers.add(timer);
+    };
+
     // A resume is a line coming back, not a person walking in. Announcing it is exactly
     // the noise that made a flaky connection sound like somebody pacing in and out.
-    ctx.hooks.on(HOOKS.PEER_JOIN, ({ peer, resumed }) => { if (!resumed) announce(peer, 'join'); });
+    ctx.hooks.on(HOOKS.PEER_JOIN, ({ peer, resumed }) => {
+        if (resumed) return;
+        announce(peer, 'join');
+        if (peer.channelId) greetBirthday(peer);
+    });
     ctx.hooks.on(HOOKS.PEER_LEAVE, ({ peer }) => announce(peer, 'leave'));
     // Most arrivals are not a socket opening. Switching rooms, picking one from the lobby,
     // the disconnect button, an admin's drag, the idle sweep and a DM call all happen on a
@@ -227,6 +353,8 @@ export function register(ctx) {
     ctx.hooks.on(HOOKS.PEER_MOVE, ({ peer, from, to }) => {
         if (from) announce(peer, 'leave', from);
         if (to) announce(peer, 'join', to);
+        // Somebody who signs in standing nowhere arrives at their first room by moving.
+        if (to) greetBirthday(peer);
     });
 
     ctx.admin.panel({ id: 'sounds', label: 'Join and leave sounds', order: 50 });

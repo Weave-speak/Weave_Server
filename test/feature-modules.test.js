@@ -329,6 +329,53 @@ test('an unknown command lists what does exist', async (t) => {
     assert.ok(err.detail.available.includes('roll'));
 });
 
+test('a roll typed in a channel lands in that channel, wherever the roller stands', async (t) => {
+    // Reading a text channel from a voice room is the ordinary case. A roll typed in
+    // #general used to go to the voice room instead, to whoever happened to be in it.
+    const h = await launch();
+    t.after(h.cleanup);
+    const general = h.channels.find((c) => c.isDefault) ?? h.channels[0];
+    const away = h.channels.find((c) => c.kind === 'afk');
+
+    const roller = await h.connect(await h.makeMember('roller'), away.id);
+    const reader = await h.connect(h.token, general.id);
+
+    roller.send('slash-commands:run', { command: 'flip', channelId: general.id });
+    const seen = await reader.expect('slash-commands:result');
+    assert.equal(seen.channelId, general.id, 'the result names the channel it belongs to');
+    assert.equal(seen.by.username, 'roller');
+    // The roller hears about it too: it is their roll.
+    assert.equal((await roller.expect('slash-commands:result')).channelId, general.id);
+});
+
+test('a roll aimed at a channel without text is refused, to the roller only', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+    const away = h.channels.find((c) => c.kind === 'afk');
+
+    const a = await h.connect(h.token);
+    a.send('slash-commands:run', { command: 'roll', channelId: away.id });
+    assert.equal((await a.expect('error')).code, 'text_not_allowed');
+
+    a.send('slash-commands:run', { command: 'roll', channelId: 'no-such-channel' });
+    assert.equal((await a.expect('error')).code, 'no_channel');
+});
+
+test('somebody standing nowhere cannot roll into nowhere', async (t) => {
+    // Every roomless reader shares a null channel, so an unaimed roll from one of them
+    // used to be shown to all of the others.
+    const h = await launch();
+    t.after(h.cleanup);
+
+    const lurker = await h.connect(h.token, null, { autoJoin: false });
+    const other = await h.connect(await h.makeMember('other'), null, { autoJoin: false });
+    lurker.send('slash-commands:run', { command: 'flip' });
+
+    assert.equal((await lurker.expect('error')).code, 'not_joined');
+    await settle(other);
+    assert.deepEqual(other.inbox.filter((m) => m.type === 'slash-commands:result'), []);
+});
+
 // ── sounds ───────────────────────────────────────────────────────────────────
 
 test('sounds ship with an empty library and are off by default', async (t) => {
@@ -485,6 +532,75 @@ test('coming and going without a room is heard by nobody', async (t) => {
         await settle(reader);
         assert.deepEqual(reader.inbox.filter((m) => m.type === 'sounds:play'), [], 'nobody arrived anywhere');
     }
+});
+
+// ── an administrator choosing sounds ─────────────────────────────────────────
+
+test('an administrator can give somebody their join and leave sounds', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+    await h.call('POST', '/api/admin/modules/sounds/enable', { token: h.token });
+    const sound = await h.call('POST', '/api/sounds?name=Fanfare', { token: h.token, raw: oggBytes() });
+
+    const memberToken = await h.makeMember('quiet-one');
+    const member = (await h.call('GET', '/api/me', { token: memberToken })).body.user;
+
+    const set = await h.call('PUT', `/api/sounds/users/${member.id}`, {
+        token: h.token, body: { joinSound: sound.body.id, leaveSound: null },
+    });
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+
+    // It is the same choice the person would have made themselves, and they see it.
+    const theirs = await h.call('GET', '/api/sounds/me', { token: memberToken });
+    assert.equal(theirs.body.joinSound, sound.body.id);
+    const listed = (await h.call('GET', '/api/sounds/users', { token: h.token })).body.users
+        .find((u) => u.id === member.id);
+    assert.equal(listed.joinSound, sound.body.id);
+
+    // Only an administrator chooses for somebody else.
+    const refused = await h.call('PUT', `/api/sounds/users/${member.id}`, {
+        token: memberToken, body: { joinSound: null, leaveSound: null },
+    });
+    assert.equal(refused.status, 403);
+    assert.equal((await h.call('PUT', '/api/sounds/users/nobody', {
+        token: h.token, body: { joinSound: null },
+    })).status, 404);
+});
+
+test('the birthday person is greeted in their room a few seconds after arriving', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+    await h.call('POST', '/api/admin/modules/sounds/enable', { token: h.token });
+    const song = await h.call('POST', '/api/sounds?name=Song', { token: h.token, raw: oggBytes() });
+
+    const memberToken = await h.makeMember('celebrant');
+    const member = (await h.call('GET', '/api/me', { token: memberToken })).body.user;
+
+    // Both or neither: half a birthday is a setting that does nothing.
+    assert.equal((await h.call('PUT', '/api/sounds/birthday', {
+        token: h.token, body: { userId: member.id },
+    })).status, 400);
+
+    const set = await h.call('PUT', '/api/sounds/birthday', {
+        token: h.token, body: { userId: member.id, soundId: song.body.id },
+    });
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+    assert.equal(set.body.user.username, 'celebrant');
+
+    const general = h.channels.find((c) => c.isDefault) ?? h.channels[0];
+    const host = await h.connect(h.token, general.id);
+    const celebrant = await h.connect(memberToken, general.id);
+
+    // No join default is configured, so the first sound is the birthday one — and the
+    // celebrant hears it too, because it is for them.
+    const played = await host.expect('sounds:play', 9000);
+    assert.equal(played.which, 'birthday');
+    assert.equal(played.soundId, song.body.id);
+    assert.equal((await celebrant.expect('sounds:play', 2000)).which, 'birthday');
+
+    // Deleting the song ends the birthday rather than leaving a dangling id.
+    await h.call('DELETE', `/api/sounds/${song.body.id}`, { token: h.token });
+    assert.equal((await h.call('GET', '/api/sounds/birthday', { token: h.token })).body.soundId, null);
 });
 
 // ── detachability ────────────────────────────────────────────────────────────
