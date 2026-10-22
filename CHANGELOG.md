@@ -4,8 +4,42 @@ All notable changes to Weave Server are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-The server serves the most recent entries to clients through `GET /api/changelog`,
-so write them for the people using Weave, not only for developers.
+Write entries for the people running and using Weave, not only for developers. (An earlier
+version of this note said the server serves these to clients through `GET /api/changelog`;
+no such route was ever built, and the client now shows its own release notes instead.)
+
+## [0.1.37] - 2026-10-22
+
+### Added
+- **Bubbles are back.** The previous server's favourite: an administrator makes a bubble — a
+  photo and a name — and a few at a time drift over everybody's chat, each with a small
+  conversation of its own that belongs to no channel. A random handful (sometimes none) is
+  chosen every twenty minutes; how many and how often are settings. Bubble messages are kept
+  for ever unless a retention period is set. On by default, as the `bubbles` module;
+  switching it off removes it cleanly. Clients that do not know about bubbles ignore them.
+
+- **A birthday.** An administrator names a person and a sound from the library, and that
+  person's room hears it a few seconds after they arrive — once per sign-in, including them.
+  Part of the `sounds` module (`GET`/`PUT /api/sounds/birthday`).
+
+- **Choosing somebody's sounds for them.** Administrators can set anybody's join and leave
+  sounds (`GET /api/sounds/users`, `PUT /api/sounds/users/:id`) — the previous server's
+  Configurations screen. It is the same choice the person can make themselves, so whoever
+  chose last wins.
+
+- **Every restriction in force, in one list.** `GET /api/admin/moderation` lists the server
+  mutes and kick cooldowns in force, with who applied them and when they end, so a mute can
+  be seen and lifted without finding the person in a room first.
+
+### Changed
+- **A slash command lands in the channel it was typed in.** `/roll` typed while reading a
+  text channel from a voice room used to announce itself in the voice room. A client now
+  names the channel, which must accept text, and the result names it back. Older clients,
+  which name nothing, are answered as before. Somebody standing in no room at all is refused
+  rather than heard by every other roomless reader.
+
+- One check for what a message attachment may be, shared by text chat, direct messages and
+  bubbles, rather than a copy in each.
 
 ## [0.1.36] - 2026-10-13
 

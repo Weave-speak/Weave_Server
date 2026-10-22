@@ -99,5 +99,11 @@ start if one changes underneath it. Add a new migration instead.
 | `uploads` | on | Image attachments, type decided by magic bytes |
 | `afk` | on | Moves idle people to an away channel. Uses keyboard and mouse idleness where the desktop client can report it, microphone silence otherwise |
 | `slash-commands` | on | `/roll`, `/flip` — their own message type, so they work without chat |
-| `sounds` | **off** | Join and leave sounds. Ships with an empty library |
+| `reactions` | on | Emoji reactions on channel messages. Requires `text-chat` |
+| `link-preview` | on | Server-fetched previews for links, refusing private addresses |
+| `dm` | on | One-to-one threads with history, read markers and calls |
+| `private-channels` | on | Members-only rooms any member can make |
+| `diagnostics` | on | Bug reports from the client, with the server's own log attached |
+| `bubbles` | on | Admin-made photo bubbles that drift over the chat, each with its own conversation |
+| `sounds` | **off** | Join and leave sounds, and the birthday. Ships with an empty library |
 | `dev-smoke` | **off** | A page that proves audio flows. For verifying a deployment |
