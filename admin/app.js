@@ -52,15 +52,20 @@ const PLACEHOLDERS = {
         ],
         instead: 'System → Logs shows the server side of any incident.',
     },
+    // Built, and on by default — but made and managed in the app, which is where people see
+    // them. Kept in this list so the console says where to go instead of looking finished.
     bubbles: {
         title: 'Bubbles',
-        why: 'Not ported from the previous server yet.',
+        tag: 'Managed in the app',
+        why: 'Bubbles work: the module is on by default. They are made, cleared and deleted in the '
+            + 'Weave app (0.1.71 or later), under Settings → Admin → Bubbles, where they can be seen '
+            + 'drifting at the same time. This console has no controls of its own for them.',
+        needsLabel: 'What a console screen would add',
         needs: [
-            'A bubbles module with its own tables and rotation timer',
-            'Admin CRUD for bubbles, and a wipe action separate from deletion',
-            'Client rendering, which is a client concern and does not exist yet',
+            'Nothing the app does not already do — make a bubble from a photo, clear its messages, delete it',
         ],
-        instead: 'Nothing — the feature is absent rather than half-present.',
+        instead: 'Settings → Admin → Bubbles in the Weave app. How many float at once and how often '
+            + 'they rotate are under Settings here, in the Bubbles group.',
     },
     diagnostics: {
         title: 'Diagnostics',
@@ -288,10 +293,10 @@ function placeholderView(key) {
     return `
     <div class="scroll">
       <div class="placeholder">
-        <span class="tag">Not built yet</span>
+        <span class="tag">${esc(p.tag ?? 'Not built yet')}</span>
         <h2>${esc(p.title)}</h2>
         <p>${esc(p.why)}</p>
-        <p><strong>What this screen will need:</strong></p>
+        <p><strong>${esc(p.needsLabel ?? 'What this screen will need')}:</strong></p>
         <ul>${p.needs.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
         <p style="margin-top:14px"><strong>In the meantime:</strong> ${esc(p.instead)}</p>
       </div>

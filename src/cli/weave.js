@@ -343,10 +343,12 @@ const COMMANDS = {
     placeholders() {
         // Read from the console's own list so this can never drift from what is on screen.
         const source = fs.readFileSync(new URL('../../admin/app.js', import.meta.url), 'utf8');
-        const titles = [...source.matchAll(/title:\s*'([^']+)'/g)].map((m) => m[1]);
+        // A screen with its own tag is not unbuilt — it is somewhere else, and says where.
+        const screens = [...source.matchAll(/title:\s*'([^']+)',\s*(?:tag:\s*'([^']+)')?/g)]
+            .map((m) => ({ title: m[1], tag: m[2] ?? null }));
         process.stdout.write('\nAdmin console screens that are not built yet\n');
         process.stdout.write('═══════════════════════════════════════════\n\n');
-        for (const t of titles) process.stdout.write(`  · ${t}\n`);
+        for (const s of screens) process.stdout.write(`  · ${s.title}${s.tag ? ` (${s.tag.toLowerCase()})` : ''}\n`);
         process.stdout.write('\nSee docs/placeholders.md for what each one needs.\n\n');
     },
 

@@ -8,6 +8,16 @@ Write entries for the people running and using Weave, not only for developers. (
 version of this note said the server serves these to clients through `GET /api/changelog`;
 no such route was ever built, and the client now shows its own release notes instead.)
 
+## [0.1.38] - 2026-10-22
+
+### Changed
+- **The console's Bubbles screen says where bubbles are.** It still read "Not ported from the
+  previous server yet" after 0.1.37 shipped them. Bubbles are made and managed in the Weave app
+  (0.1.71 or later) under Settings → Admin → Bubbles, and the screen now says so; their
+  settings — how many float, how often they rotate — are under Settings in this console.
+  `weave placeholders` marks it the same way. No other change; a 0.1.37 server works with the
+  new app.
+
 ## [0.1.37] - 2026-10-22
 
 ### Added

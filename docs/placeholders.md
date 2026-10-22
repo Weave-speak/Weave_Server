@@ -13,7 +13,7 @@ need and what to use instead today. The same list lives in `admin/app.js` as the
 | Roles & Permissions | Community | Placeholder |
 | Timeouts | Moderation | Partly built — the actions exist, the console view does not |
 | Bug Reports | Moderation | Placeholder |
-| Bubbles | Customise | Placeholder |
+| Bubbles | Customise | Built — managed in the app, not here |
 | Diagnostics | System | Placeholder |
 
 ---
@@ -83,16 +83,15 @@ lines, so a user can quote it and you can `grep` for it.
 
 ## Bubbles
 
-**Why it is empty.** Not ported from the previous server.
+**Why it is empty.** Bubbles are built — the `bubbles` module (0.1.37) is on by default —
+but they are made, cleared and deleted in the Weave app, 0.1.71 or later, under Settings →
+Admin → Bubbles. That is where they are seen drifting, so that is where they are managed;
+this console screen says so rather than duplicating it.
 
-**What it needs**
+**What it would add.** Nothing the app does not already do.
 
-- A `bubbles` module with its own tables and a rotation timer.
-- Admin CRUD, plus a "clear messages" action distinct from deleting the bubble.
-- Client rendering — which is a client concern, and there is no client yet.
-
-**Use instead.** Nothing. The feature is absent rather than half-present, which is the
-honest state for it.
+**Use instead.** Settings → Admin → Bubbles in the app. How many float at once, how often
+they rotate and how long their messages are kept are module settings, under Settings here.
 
 ---
 
