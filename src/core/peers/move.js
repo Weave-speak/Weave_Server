@@ -18,6 +18,9 @@ import { HOOKS } from '../hooks/index.js';
  * administrator" and "you were moved for being idle" are different messages, and the
  * previous server showed the admin one for both.
  */
+/** Moves a person makes themselves. Arriving that way takes the account's voice. */
+const CHOSEN_MOVES = new Set(['self', 'dm-call']);
+
 export function movePeer({ db, peer, channel, peers, sfu, ws, hooks, reason = 'self', by = null }) {
     const from = peer.channelId;
     if (from === channel.id) return { moved: false, channel };
@@ -107,5 +110,87 @@ export function movePeer({ db, peer, channel, peers, sfu, ws, hooks, reason = 's
     }
     hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: channel.id, reason });
 
+    // Picking a room on this device, or answering a call on it, is choosing where to be
+    // heard — so the account's other connections step out. An administrator's move and the
+    // idle sweep are not the person's choice and take nobody else with them.
+    if (CHOSEN_MOVES.has(reason)) standDownOthers({ db, peer, peers, ws, hooks });
+
     return { moved: true, channel };
+}
+
+/**
+ * Take `peer` out of its room without taking it off the server: media closes, presence
+ * stays, and the client is told with the same `left` frame the Leave button gets.
+ *
+ * Returns false when the peer was standing nowhere already. `reason` other than 'left'
+ * rides on the frame, so the client can say why it is out of the room.
+ */
+export function standNowhere({ db, peer, peers, ws, hooks, reason = 'left' }) {
+    const from = peer.channelId;
+    if (from === null) return false;
+
+    // The same teardown a cross-worker move does: transports close, which closes
+    // producers and fires producerclose on every consumer elsewhere — the normal path.
+    for (const consumer of peer.consumers.values()) {
+        try { consumer.close(); } catch { /* already closed */ }
+    }
+    peer.consumers.clear();
+    for (const producer of peer.producers.values()) {
+        try { producer.close(); } catch { /* already closed */ }
+    }
+    peer.producers.clear();
+    for (const transport of peer.transports.values()) {
+        try { transport.close(); } catch { /* already closed */ }
+    }
+    peer.transports.clear();
+
+    // The room being left is told the way movePeer tells it, and before the upsert, so
+    // its clients drop whatever they hold of this peer and then refile them as standing
+    // nowhere. Each consumer's own closure notice is not that: it only reaches a listener
+    // the server still has a consumer for. A listener whose client held a stale one —
+    // the server's side long gone — was told nothing at all, so "Leave the room" and
+    // straight back in, the first thing anybody tries, changed nothing for exactly the
+    // listeners it was meant to fix.
+    ws.broadcast('peer_left', { cid: peer.cid, userId: peer.userId, moved: true }, (sock) => {
+        const other = peers.get(sock.cid);
+        return other && other.channelId === from && other.cid !== peer.cid;
+    });
+
+    const fromChannel = getChannel(db, from);
+    // Logged because its absence read as something else: a timeline showing somebody
+    // "moved to General from nowhere", with no departure anywhere before it.
+    peer.ws?.log?.info({ evt: 'peer.left_room', from: fromChannel?.name ?? from, reason },
+        `${peer.username} left ${fromChannel?.name ?? 'the room'}${reason === 'elsewhere' ? ' for another device' : ''}`);
+
+    peer.channelId = null;
+    ws.send(peer.ws, 'left', { channel: null, ...(reason !== 'left' ? { reason } : {}) });
+
+    // An upsert everyone understands: the same peer, now standing nowhere.
+    const view = PeerRegistry.publicView(peer);
+    for (const other of peers.all) {
+        if (other.cid === peer.cid) continue;
+        ws.send(other.ws, 'peer_joined', { peer: viewFor(db, view, other.userId) });
+    }
+    if (fromChannel?.private) touchOccupancy(db, from);
+    hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: null, reason });
+    return true;
+}
+
+/**
+ * One account, one voice: every connection `peer`'s account holds, except `peer`, stands
+ * nowhere.
+ *
+ * Somebody signed in on a laptop and a phone used to be in the room twice — two
+ * microphones the room heard at once, and two mute states, so muting on one device left
+ * the other one live. The connection that most recently chose to be somewhere is the one
+ * that is heard; the others stay signed in, reading, and are told why (`left`, reason
+ * 'elsewhere'), so their client can offer to bring voice back to them.
+ */
+export function standDownOthers({ db, peer, peers, ws, hooks }) {
+    let stood = 0;
+    for (const other of peers.forUser(peer.userId)) {
+        if (other.cid === peer.cid) continue;
+        if (standNowhere({ db, peer: other, peers, ws, hooks, reason: 'elsewhere' })) stood += 1;
+    }
+    return stood;
 }

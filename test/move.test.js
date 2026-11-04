@@ -62,7 +62,14 @@ function harness({ assignment = {}, allowVoice = true, others = [] } = {}) {
         sfu: fakeSfu(assignment),
         // `all` feeds the per-recipient announcement; `db` answers the channel lookups
         // the privacy mask and occupancy stamps make. Public channels, so no masking.
-        peers: { get: () => null, channelSnapshot: () => [], all: others },
+        // `forUser` is the one-voice rule asking which other connections the account
+        // holds: none here, so a self-move stands nobody down.
+        peers: {
+            get: () => null,
+            channelSnapshot: () => [],
+            all: others,
+            forUser: (userId) => others.filter((p) => p.userId === userId),
+        },
         db: { prepare: () => ({ get: () => undefined, run: () => {} }) },
         ws: {
             send: (sock, type, payload) => sent.push({ sock, type, payload }),

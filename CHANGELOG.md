@@ -8,6 +8,20 @@ Write entries for the people running and using Weave, not only for developers. (
 version of this note said the server serves these to clients through `GET /api/changelog`;
 no such route was ever built, and the client now shows its own release notes instead.)
 
+## [0.1.39] - 2026-11-04
+
+### Changed
+- **One voice per person.** Somebody signed in on two devices used to be in the room on
+  both — two microphones the room heard at once, each with its own mute. Now the device
+  that most recently chose to be somewhere is the one heard. Opening the app or signing in
+  with "Drop me straight in" takes voice to that device, into the room the person is
+  already in (a call included), and picking a room or answering a call does too. The
+  other devices stay signed in, standing in no room, and are told why (`left` with reason
+  `elsewhere`), so a client can offer to bring voice back. An automatic reconnect does not
+  take voice from the device that has it (`join` with `reconnect: true`; such a join
+  arrives nowhere, with `joined.elsewhere`). An administrator's move takes the person once:
+  the device they are heard on.
+
 ## [0.1.38] - 2026-10-22
 
 ### Changed

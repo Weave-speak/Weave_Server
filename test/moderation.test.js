@@ -534,7 +534,7 @@ test('an administrator cannot move somebody into a private room they are not on'
         'membership is the entire point of a private room');
 });
 
-test('a move takes every connection the account holds, not just one', async (t) => {
+test('a move takes the person: the one connection they are heard on', async (t) => {
     const h = await launch();
     t.after(() => h.stop());
     const kes = await h.mint('kestrel');
@@ -544,14 +544,17 @@ test('a move takes every connection the account holds, not just one', async (t) 
 
     const admin = await h.connect(h.adminToken);
     const laptop = await h.connect(kes.token, { channelId: voice[0].id });
+    // One account, one voice: the phone takes it and the laptop stands nowhere.
     const phone = await h.connect(kes.token, { channelId: voice[0].id });
+    assert.equal((await laptop.expect('left')).reason, 'elsewhere');
 
     const target = voice.find((c) => c.id !== voice[0].id);
     admin.send('adminMove', { userId: kes.user.id, channelId: target.id });
 
-    assert.equal((await laptop.expect('moved')).channel.id, target.id);
     assert.equal((await phone.expect('moved')).channel.id, target.id,
-        'otherwise the row moves in the sidebar while they are still audible in the old room');
+        'the person moves, so they are not left audible in the old room');
+    await assert.rejects(laptop.expect('moved', 600), /timeout/,
+        'and only once: the laptop stays out, or they would be in the room twice');
 });
 
 test('a server mute reaches every connection, and the roster shows it', async (t) => {

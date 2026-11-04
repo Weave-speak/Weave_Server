@@ -14,7 +14,7 @@
 // alternative is that a forged message lets someone listen to a room they were never in.
 
 import { PeerRegistry, SLOTS, isValidSlot } from '../../peers/index.js';
-import { movePeer } from '../../peers/move.js';
+import { movePeer, standNowhere, standDownOthers } from '../../peers/move.js';
 import { viewFor, snapshotFor } from '../../peers/visibility.js';
 import { getChannel, defaultChannel, isMember, touchOccupancy } from '../../channels/index.js';
 import { negotiate, ProtocolMismatchError } from '../../../protocol/index.js';
@@ -148,7 +148,7 @@ export function registerCoreWsHandlers({
         let requested = msg.channelId ? getChannel(db, msg.channelId) : null;
         if (requested?.private && !isMember(db, requested.id, session.userId)) requested = null;
         const wantRoom = msg.autoJoin !== false;
-        const channel = wantRoom
+        let channel = wantRoom
             ? ((requested && requested.kind !== 'text' ? requested : null) ?? defaultChannel(db))
             : null;
         if (wantRoom && !channel) {
@@ -216,6 +216,30 @@ export function registerCoreWsHandlers({
         // heartbeat sweep if it had not.
         if (prior) peers.disconnect(prior, SUPERSEDED_CLOSE_CODE, 'replaced by a fresh join');
 
+        // One account, one voice (see standDownOthers). A person opening the app, or
+        // signing in, takes voice to that device — below, after the join. An AUTOMATIC
+        // reconnect does not take it back from whichever device has it now: after an
+        // outage every device reconnects in whatever order its network allows, and the one
+        // in somebody's pocket must not win by being slower. It arrives standing nowhere,
+        // and is told why so its client can offer to bring voice back.
+        // Taking voice to this device CONTINUES where the person is, rather than going to
+        // wherever this device last stood: open the app on a phone in the middle of a
+        // conversation and it joins that conversation. A call included — one ends the
+        // moment its room is down to one, so joining the default room instead would hang
+        // up on the other side. Not the away room: opening an app is not being idle.
+        if (channel && msg.reconnect !== true) {
+            const heard = peers.forUser(session.userId).find((p) => p.channelId !== null);
+            const room = heard ? getChannel(db, heard.channelId) : null;
+            if (room && room.kind !== 'text' && room.kind !== 'afk') channel = room;
+        }
+
+        let elsewhere = false;
+        if (channel && msg.reconnect === true
+            && peers.forUser(session.userId).some((p) => p.channelId !== null)) {
+            channel = null;
+            elsewhere = true;
+        }
+
         ws.session = session;
         const peer = peers.add(ws, session, channel?.id ?? null, protocol);
         touchLastSeen(db, session.userId);
@@ -245,6 +269,7 @@ export function registerCoreWsHandlers({
             // to find out. Masked per viewer: private rooms keep their secret.
             peers: snapshotFor(db, peers.snapshot(ws.cid), session.userId),
             ...(channel ? { rtpCapabilities: sfu.rtpCapabilities(channel.id) } : {}),
+            ...(elsewhere ? { elsewhere: true } : {}),
         });
 
         // Everyone hears about an arrival, wherever they stand — the frame carries the
@@ -252,6 +277,10 @@ export function registerCoreWsHandlers({
         announcePeer(peer);
         if (channel?.private) touchOccupancy(db, channel.id);
         hooks.emit(HOOKS.PEER_JOIN, { peer, channel });
+
+        // Arriving in a room is choosing to be heard here: this account's other
+        // connections step out of theirs.
+        if (channel) standDownOthers({ db, peer, peers, ws: wsServer, hooks });
     }, { auth: 'none' });
 
     // ── leaving a room without leaving the server ────────────────────────────
@@ -260,45 +289,8 @@ export function registerCoreWsHandlers({
     registry.register('core', 'leave', ({ ws, send }) => {
         const peer = peers.get(ws.cid);
         if (!peer) return;
-        const from = peer.channelId;
-        if (from === null) return send('left', { channel: null });
-
-        // The same teardown a cross-worker move does: transports close, which closes
-        // producers and fires producerclose on every consumer elsewhere — the normal path.
-        for (const consumer of peer.consumers.values()) {
-            try { consumer.close(); } catch { /* already closed */ }
-        }
-        peer.consumers.clear();
-        for (const producer of peer.producers.values()) {
-            try { producer.close(); } catch { /* already closed */ }
-        }
-        peer.producers.clear();
-        for (const transport of peer.transports.values()) {
-            try { transport.close(); } catch { /* already closed */ }
-        }
-        peer.transports.clear();
-
-        // The room being left is told the way movePeer tells it, and before the upsert, so
-        // its clients drop whatever they hold of this peer and then refile them as standing
-        // nowhere. Each consumer's own closure notice is not that: it only reaches a listener
-        // the server still has a consumer for. A listener whose client held a stale one —
-        // the server's side long gone — was told nothing at all, so "Leave the room" and
-        // straight back in, the first thing anybody tries, changed nothing for exactly the
-        // listeners it was meant to fix.
-        toChannel(from, 'peer_left', { cid: peer.cid, userId: peer.userId, moved: true }, peer.cid);
-
-        const fromChannel = getChannel(db, from);
-        // Logged because its absence read as something else: a timeline showing somebody
-        // "moved to General from nowhere", with no departure anywhere before it.
-        ws.log.info({ evt: 'peer.left_room', from: fromChannel?.name ?? from },
-            `${peer.username} left ${fromChannel?.name ?? 'the room'}`);
-
-        peer.channelId = null;
-        send('left', { channel: null });
-        // An upsert everyone understands: the same peer, now standing nowhere.
-        announcePeer(peer);
-        if (fromChannel?.private) touchOccupancy(db, from);
-        hooks.emit(HOOKS.PEER_MOVE, { peer, from, to: null, reason: 'left' });
+        // Standing nowhere already is calm: the answer is the same.
+        if (!standNowhere({ db, peer, peers, ws: wsServer, hooks })) send('left', { channel: null });
     });
 
     // ── heartbeat ────────────────────────────────────────────────────────────
@@ -747,13 +739,18 @@ export function registerCoreWsHandlers({
 
     // ── admin: move someone else ─────────────────────────────────────────────
     //
-    // Takes a userId in preference to a cid, and moves EVERY connection that account
-    // holds. The roster shows one row per person, so dragging that row and having only the
-    // laptop follow while the phone stays behind is not a move anybody asked for.
+    // Takes a userId in preference to a cid, and moves the PERSON: the one connection
+    // their account is heard on. One account stands in one room (standDownOthers), so
+    // their other devices are standing nowhere on purpose and stay there — moving them
+    // too would put the person in the room twice. Somebody standing nowhere on every
+    // device is moved on the connection they opened last.
     registry.register('core', 'adminMove', ({ ws, msg, send, fail }) => {
-        const targets = msg.userId ? peers.forUser(msg.userId)
+        const held = msg.userId ? peers.forUser(msg.userId)
             : [peers.get(msg.cid)].filter(Boolean);
-        if (!targets.length) return fail(ws, 'no_peer', 'That person is no longer connected.');
+        if (!held.length) return fail(ws, 'no_peer', 'That person is no longer connected.');
+        const standing = held.filter((p) => p.channelId !== null);
+        const targets = standing.length ? standing
+            : [held.reduce((newest, p) => (p.joinedAt > newest.joinedAt ? p : newest))];
 
         const channel = getChannel(db, msg.channelId);
         if (!channel) return fail(ws, 'no_channel', 'No such channel.');
@@ -780,6 +777,10 @@ export function registerCoreWsHandlers({
                 reason: 'admin', by,
             });
         }
+
+        // Moving one named connection (the cid form) is that connection standing
+        // somewhere, so the account's others step out as they would for its own move.
+        if (targets.length === 1) standDownOthers({ db, peer: targets[0], peers, ws: wsServer, hooks });
 
         const [first] = targets;
         audit(db, {
