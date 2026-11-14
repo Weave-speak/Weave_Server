@@ -71,6 +71,11 @@ sudo -u weave weave admin-reset --promote bob      # grant access
 sudo -u weave weave admin-create --user alice      # when there are none at all
 ```
 
+Resetting a password never grants administrator access: an administrator's reset keeps it
+(and re-enables the account), anybody else's resets only the password. Before 0.1.40 a
+reset promoted whoever it named, so if you reset a member's password this way on an older
+server, check the list above and remove what should not be there in Settings → Members.
+
 If no administrator exists at all, restarting the server prints a fresh first-run setup
 code to the journal. That is recoverable by design — an expired code costs a restart, not
 a reinstall.

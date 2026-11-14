@@ -10,8 +10,15 @@
 
 import { expiredMutes, settleExpired } from './index.js';
 
-/** Half a minute. A mute overstaying by up to that is not worth a busier timer. */
-const DEFAULT_INTERVAL_MS = 30_000;
+/**
+ * Five seconds.
+ *
+ * It was half a minute, on the reasoning that a mute overstaying by that much was not worth
+ * a busier timer — true while the shortest mute was five minutes, not once thirty seconds
+ * became a choice: a 30 s mute could have lasted a full minute. The query is one indexed
+ * scan of a table that holds a handful of rows, so running it more often costs nothing.
+ */
+const DEFAULT_INTERVAL_MS = 5_000;
 
 export function watchMuteExpiry({
     db,

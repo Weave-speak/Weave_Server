@@ -179,12 +179,23 @@ const COMMANDS = {
         // Whoever knew the old password is signed out. If you are resetting it, that is
         // the outcome you want.
         const revoked = revokeAllForUser(db, user.id);
-        db.prepare('UPDATE users SET is_admin = 1, is_disabled = 0 WHERE id = ?').run(user.id);
+
+        // Administrator access is re-confirmed only for an account that already has it.
+        // This used to promote whoever was named, so resetting an ordinary member's
+        // forgotten password from the command line quietly made them an administrator —
+        // able to move, mute and kick everybody, with nothing anywhere saying so.
+        // Promotion stays one deliberate flag away.
+        if (user.isAdmin) {
+            db.prepare('UPDATE users SET is_admin = 1, is_disabled = 0 WHERE id = ?').run(user.id);
+        }
         db.close();
 
-        process.stdout.write(
-            `\nPassword changed for ${user.username}, administrator access confirmed, `
-            + `and ${revoked} existing session(s) signed out.\n\n`,
+        process.stdout.write(user.isAdmin
+            ? `\nPassword changed for ${user.username}, administrator access confirmed, `
+                + `and ${revoked} existing session(s) signed out.\n\n`
+            : `\nPassword changed for ${user.username} and ${revoked} existing session(s) signed out.\n`
+                + `${user.username} is not an administrator and was not made one. To do that:\n\n`
+                + `  weave admin-reset --promote ${user.username}\n\n`,
         );
     },
 

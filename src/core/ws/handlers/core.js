@@ -78,6 +78,18 @@ export const SESSION_REVOKED_CLOSE_CODE = 4007;
  */
 const MAX_MUTE_MINUTES = 7 * 24 * 60;
 
+/**
+ * The shortest timed server mute: thirty seconds.
+ *
+ * Half a minute rather than a new field in seconds, so the wire stays the one it was and a
+ * client that only knows whole minutes is unaffected. The floor used to be a whole minute,
+ * which turned the client's "30 seconds" into twice that.
+ */
+const MIN_MUTE_MINUTES = 0.5;
+
+/** "30s", "5m": how long a mute was for, in the audit log a person reads. */
+const muteLength = (minutes) => (minutes < 1 ? `${Math.round(minutes * 60)}s` : `${minutes}m`);
+
 export function registerCoreWsHandlers({
     registry, peers, sfu, db, auth, log, hooks, ws: wsServer,
     // Injected so the sweep that lifts an expired mute runs the SAME code as the handler
@@ -576,7 +588,12 @@ export function registerCoreWsHandlers({
         const producer = peer.producers.get(msg.slot);
         if (!producer) return fail(ws, 'no_producer', 'You are not sending that.');
 
-        const paused = msg.paused !== false;
+        // A forced mute outranks a resume here exactly as it does in setMute. This handler
+        // used to resume whatever it was asked to, so a server-muted person could lift their
+        // own mute with one hand-written frame; the paused state reported back is the true
+        // one, not the one requested.
+        const forced = msg.slot === SLOTS.AUDIO && peer.forceMuted;
+        const paused = msg.paused !== false || forced;
         if (paused) producer.pause(); else producer.resume();
 
         send('producerPaused', { slot: msg.slot, paused });
@@ -809,15 +826,20 @@ export function registerCoreWsHandlers({
         if (!target) return fail(ws, 'no_user', 'No such account.');
         // An administrator silencing another administrator is a fight the server should
         // not referee, and it is the shape every mute-war starts as.
+        //
+        // Its own code, not `forbidden`. Clients treat `forbidden` as the end of the
+        // session — it is what the gate says to somebody who is not an administrator at
+        // all — and an administrator who aimed at a colleague lost their own connection
+        // with nothing on screen, which read as "the mute button does nothing".
         if (target.isAdmin) {
-            return fail(ws, 'forbidden', 'Administrators cannot server-mute one another.');
+            return fail(ws, 'target_is_admin', 'Administrators cannot server-mute one another.');
         }
 
         const wanted = msg.muted !== false;
         // null minutes is the "until an administrator lifts it" form; anything else is
         // clamped, so a typo cannot mute somebody for a century.
         const minutes = msg.minutes == null ? null
-            : Math.min(MAX_MUTE_MINUTES, Math.max(1, Number(msg.minutes) || 0));
+            : Math.min(MAX_MUTE_MINUTES, Math.max(MIN_MUTE_MINUTES, Number(msg.minutes) || 0));
 
         let until = null;
         if (wanted) until = applyMute(db, { userId: targetId, byUserId: actor.userId, minutes }).expiresAt;
@@ -829,7 +851,7 @@ export function registerCoreWsHandlers({
             actorId: actor.userId,
             action: wanted ? 'ADMIN_SERVER_MUTED' : 'ADMIN_SERVER_UNMUTED',
             target: target.username,
-            detail: wanted ? (minutes == null ? 'until lifted' : `${minutes}m`) : null,
+            detail: wanted ? (minutes == null ? 'until lifted' : muteLength(minutes)) : null,
         });
         ws.log.warn({ evt: 'peer.server_muted', target: target.username, muted: wanted, minutes },
             `${actor.username} ${wanted ? 'server-muted' : 'un-server-muted'} ${target.username}`);
@@ -850,7 +872,8 @@ export function registerCoreWsHandlers({
 
         const target = getUserById(db, targetId);
         if (!target) return fail(ws, 'no_user', 'No such account.');
-        if (target.isAdmin) return fail(ws, 'forbidden', 'Administrators cannot kick one another.');
+        // `target_is_admin`, not `forbidden`, for the reason given in serverMute.
+        if (target.isAdmin) return fail(ws, 'target_is_admin', 'Administrators cannot kick one another.');
 
         const record = recordKick(db, {
             userId: targetId, byUserId: actor.userId, reason: msg.reason ?? null,

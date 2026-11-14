@@ -33,6 +33,7 @@ import { createDeparture } from './core/peers/departure.js';
 import { registerCoreWsHandlers } from './core/ws/handlers/core.js';
 import { movePeer } from './core/peers/move.js';
 import { getChannel } from './core/channels/index.js';
+import { getUserById } from './core/users/index.js';
 import { PROTOCOL, CORE_FEATURES } from './protocol/index.js';
 
 const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -88,6 +89,9 @@ export async function start(env = process.env) {
         log,
         config,
         onDisconnect: (sock, code) => departure.onSocketClosed(sock, code),
+        // The administrator gate asks the database rather than trusting the join-time
+        // snapshot, so removing somebody's admin flag takes effect on their open socket.
+        isAdmin: (userId) => getUserById(db, userId)?.isAdmin === true,
     });
 
     peers.onEnd = (peer, reason) => {

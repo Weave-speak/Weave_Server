@@ -8,6 +8,30 @@ Write entries for the people running and using Weave, not only for developers. (
 version of this note said the server serves these to clients through `GET /api/changelog`;
 no such route was ever built, and the client now shows its own release notes instead.)
 
+## [0.1.40] - 2026-11-14
+
+### Security
+- **Removing administrator access takes effect at once.** The WebSocket gate for moving,
+  server-muting and kicking read the flag a connection had when it joined, so somebody
+  demoted while signed in kept those powers until they reconnected. It now asks the
+  database on every such request, which also catches changes made from the command line.
+- **`weave admin-reset --user` no longer promotes.** It reset the password AND made the
+  account an administrator, and `docs/operations.md` offered it as the way to reset anyone's
+  password. It now keeps administrator access only for an account that already had it. If
+  you have reset a member's password this way, list the administrators with
+  `weave admin-reset` and remove the ones that should not be there in Settings → Members.
+- **A server mute cannot be lifted with `pauseProducer`.** That message resumed whatever it
+  was asked to, so a modified client could unmute itself. A forced mute now outranks it, as
+  it already did for `setMute`.
+
+### Changed
+- **Server mutes as short as 30 seconds** (`serverMute` with `minutes: 0.5`). The floor was
+  one minute. Expired mutes are now lifted within about 5 seconds rather than 30, so a short
+  mute ends close to when it should. The audit log reads `30s` rather than `0.5m`.
+- **An administrator aimed at another administrator is refused with `target_is_admin`**,
+  not `forbidden`. Clients treat `forbidden` as the end of their session, so a refused
+  mute or kick of a colleague quietly cost the administrator their own connection.
+
 ## [0.1.39] - 2026-11-04
 
 ### Changed

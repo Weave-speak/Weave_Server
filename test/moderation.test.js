@@ -160,6 +160,14 @@ test('a mute with no duration stays in force; one with a duration stops on its o
     assert.equal(activeMute(db, 'u2', t0 + 6 * 60_000), null, 'not muted six minutes in');
 });
 
+test('a thirty-second mute is half a minute, not rounded to one', () => {
+    const db = memoryDb();
+    const t0 = 1_000_000;
+    mute(db, { userId: 'u1', minutes: 0.5, now: t0 });
+    assert.ok(activeMute(db, 'u1', t0 + 29_000), 'still muted at 29 s');
+    assert.equal(activeMute(db, 'u1', t0 + 31_000), null, 'free at 31 s');
+});
+
 test('re-muting replaces rather than stacks, so shortening a mute actually shortens it', () => {
     const db = memoryDb();
     const t0 = 1_000_000;
@@ -312,6 +320,52 @@ test('an ordinary member cannot server-mute or kick anybody', async (t) => {
     assert.equal((await live.expect('error')).code, 'forbidden');
 });
 
+test('an ordinary member cannot move anybody either', async (t) => {
+    // The drag-into-a-room half of the same rule. The client offers no drag to a member,
+    // but the client is not where a permission lives.
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const wren = await h.mint('wren');
+    const rooms = await h.call('GET', '/api/channels', { token: h.adminToken });
+    const voice = rooms.body.channels.filter((c) => c.kind !== 'text');
+
+    const live = await h.connect(kes.token);
+    await h.connect(wren.token, { channelId: voice[0].id });
+    live.send('adminMove', { userId: wren.user.id, channelId: voice[1].id });
+    assert.equal((await live.expect('error')).code, 'forbidden');
+});
+
+test('removing somebody\'s administrator access stops them on the socket they already hold', async (t) => {
+    // The gate used to read the flag the session carried at join, so a demotion left the
+    // person moving, muting and kicking until they happened to reconnect.
+    const h = await launch();
+    t.after(() => h.stop());
+    const deputy = await h.mint('deputy');
+    const wren = await h.mint('wren');
+    await h.call('POST', `/api/admin/members/${deputy.user.id}/admin`, {
+        token: h.adminToken, body: { isAdmin: true },
+    });
+
+    const live = await h.connect(deputy.token);
+    await h.connect(wren.token);
+    live.send('serverMute', { userId: wren.user.id, minutes: 5 });
+    await live.expect('serverMuteChanged');
+    live.send('serverMute', { userId: wren.user.id, muted: false });
+    await live.expect('serverMuteChanged');
+
+    const demoted = await h.call('POST', `/api/admin/members/${deputy.user.id}/admin`, {
+        token: h.adminToken, body: { isAdmin: false },
+    });
+    assert.equal(demoted.status, 200);
+
+    // Same socket, no reconnect.
+    live.send('serverMute', { userId: wren.user.id, minutes: 5 });
+    assert.equal((await live.expect('error')).code, 'forbidden');
+    live.send('kickPeer', { userId: wren.user.id });
+    assert.equal((await live.expect('error')).code, 'forbidden');
+});
+
 test('a server mute survives the muted person reconnecting', async (t) => {
     const h = await launch();
     t.after(() => h.stop());
@@ -410,11 +464,13 @@ test('administrators cannot server-mute or kick one another, or themselves', asy
     });
 
     const admin = await h.connect(h.adminToken);
+    // Not `forbidden`: clients treat that as the end of their session, and an
+    // administrator aiming at a colleague is not that.
     admin.send('serverMute', { userId: other.user.id });
-    assert.equal((await admin.expect('error')).code, 'forbidden');
+    assert.equal((await admin.expect('error')).code, 'target_is_admin');
 
     admin.send('kickPeer', { userId: other.user.id });
-    assert.equal((await admin.expect('error')).code, 'forbidden');
+    assert.equal((await admin.expect('error')).code, 'target_is_admin');
 
     admin.send('serverMute', { userId: h.adminId });
     assert.equal((await admin.expect('error')).code, 'not_yourself');

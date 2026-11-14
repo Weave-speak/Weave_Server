@@ -23,7 +23,13 @@ export const LEAVE_CLOSE_CODE = 4000;
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX_MESSAGES = 300;
 
-export function createWsServer({ registry, log, config, onDisconnect }) {
+/**
+ * @param {(userId: string) => boolean} [isAdmin]  whether an account is an administrator
+ *   NOW, read from the database. Without it the gate falls back to the flag the session
+ *   carried when it joined — which is what it always did, and why a demotion used to leave
+ *   somebody moving and muting people until their next reconnect.
+ */
+export function createWsServer({ registry, log, config, onDisconnect, isAdmin = null }) {
     const wss = new WebSocketServer({ noServer: true, maxPayload: 512 * 1024 });
     const sockets = new Set();
 
@@ -110,9 +116,18 @@ export function createWsServer({ registry, log, config, onDisconnect }) {
                 fail(ws, 'unauthenticated', 'Join before sending this.');
                 return;
             }
-            if (entry.auth === 'admin' && !ws.session?.isAdmin) {
-                fail(ws, 'forbidden', 'This action requires an administrator account.');
-                return;
+            if (entry.auth === 'admin') {
+                // Asked of the database on every administrator message, not taken from the
+                // session. The session's flag is a snapshot from the join, and the flag
+                // changes underneath a live socket: demoted from the admin panel, or from
+                // the CLI, which is another process and cannot tell anyone. HTTP admin
+                // routes already re-read it per request; this makes the socket agree. These
+                // messages are rare enough that one indexed lookup each costs nothing.
+                if (isAdmin) ws.session.isAdmin = isAdmin(ws.session.userId) === true;
+                if (!ws.session.isAdmin) {
+                    fail(ws, 'forbidden', 'This action requires an administrator account.');
+                    return;
+                }
             }
 
             // A module's replies carry its namespace automatically, so a handler writes
