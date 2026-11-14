@@ -388,8 +388,10 @@ export function registerAdminRoutes({ router, db, config, log, moduleHost, peers
         const user = getUserById(db, params.id);
         if (!user) throw new HttpError(404, 'No such user.');
 
-        // No self-lockout guard like the admin route has: losing your own tester flag only
-        // hides some diagnostic buttons, it does not lock anyone out of anything.
+        // Tester grants one administrator power: a timed server mute (see serverMute in
+        // ws/handlers/core.js). No self-lockout guard like the admin route has: losing the
+        // tester flag takes that power away, it does not lock anyone out of anything. It
+        // applies to a connected tester at once, because the socket gate re-reads roles.
         const makeTester = body?.isTester === true;
         db.prepare('UPDATE users SET is_tester = ? WHERE id = ?').run(makeTester ? 1 : 0, user.id);
         audit(session, makeTester ? 'TESTER_GRANTED' : 'TESTER_REVOKED', user.username);

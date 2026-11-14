@@ -299,7 +299,7 @@ test('a role change is pushed to the account\'s live sessions, so the client re-
     const live = await h.connect(kes.token);
 
     // Granting tester while they are connected must reach that socket -- without this the
-    // stream-quality buttons stay hidden until a re-login, which is the bug this fixes.
+    // server-mute option stays hidden until a re-login.
     const grant = await h.call('POST', `/api/admin/members/${kes.user.id}/tester`, {
         token: h.adminToken, body: { isTester: true },
     });

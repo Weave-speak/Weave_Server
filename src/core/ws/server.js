@@ -24,12 +24,30 @@ const RATE_WINDOW_MS = 10_000;
 const RATE_MAX_MESSAGES = 300;
 
 /**
- * @param {(userId: string) => boolean} [isAdmin]  whether an account is an administrator
- *   NOW, read from the database. Without it the gate falls back to the flag the session
- *   carried when it joined — which is what it always did, and why a demotion used to leave
- *   somebody moving and muting people until their next reconnect.
+ * Who a privileged message is open to.
+ *
+ *   'admin'      administrators only — kick, move somebody else
+ *   'moderator'  administrators and testers — server mute, which a handler then limits
+ *                further for a tester (timed only, lifting only their own)
  */
-export function createWsServer({ registry, log, config, onDisconnect, isAdmin = null }) {
+const ROLE_GATES = Object.freeze({
+    admin: {
+        allows: (s) => s.isAdmin,
+        refusal: 'This action requires an administrator account.',
+    },
+    moderator: {
+        allows: (s) => s.isAdmin || s.isTester,
+        refusal: 'This action requires an administrator or tester account.',
+    },
+});
+
+/**
+ * @param {(userId: string) => { isAdmin: boolean, isTester: boolean }} [rolesOf]  the
+ *   account's roles NOW, read from the database. Without it the gate falls back to the flags
+ *   the session carried when it joined — which is what it always did, and why a demotion
+ *   used to leave somebody moving and muting people until their next reconnect.
+ */
+export function createWsServer({ registry, log, config, onDisconnect, rolesOf = null }) {
     const wss = new WebSocketServer({ noServer: true, maxPayload: 512 * 1024 });
     const sockets = new Set();
 
@@ -116,16 +134,23 @@ export function createWsServer({ registry, log, config, onDisconnect, isAdmin = 
                 fail(ws, 'unauthenticated', 'Join before sending this.');
                 return;
             }
-            if (entry.auth === 'admin') {
-                // Asked of the database on every administrator message, not taken from the
-                // session. The session's flag is a snapshot from the join, and the flag
-                // changes underneath a live socket: demoted from the admin panel, or from
-                // the CLI, which is another process and cannot tell anyone. HTTP admin
-                // routes already re-read it per request; this makes the socket agree. These
-                // messages are rare enough that one indexed lookup each costs nothing.
-                if (isAdmin) ws.session.isAdmin = isAdmin(ws.session.userId) === true;
-                if (!ws.session.isAdmin) {
-                    fail(ws, 'forbidden', 'This action requires an administrator account.');
+            const gate = ROLE_GATES[entry.auth];
+            if (gate) {
+                // Asked of the database on every privileged message, not taken from the
+                // session. The session's flags are a snapshot from the join, and they change
+                // underneath a live socket: granted or removed from the admin panel, or from
+                // the CLI, which is another process and cannot tell anyone. HTTP admin routes
+                // already re-read them per request; this makes the socket agree. These
+                // messages are rare enough that one indexed lookup each costs nothing. Both
+                // flags are refreshed, because a handler behind the 'moderator' gate asks
+                // which of the two let the message through.
+                if (rolesOf) {
+                    const roles = rolesOf(ws.session.userId) ?? {};
+                    ws.session.isAdmin = roles.isAdmin === true;
+                    ws.session.isTester = roles.isTester === true;
+                }
+                if (!gate.allows(ws.session)) {
+                    fail(ws, 'forbidden', gate.refusal);
                     return;
                 }
             }

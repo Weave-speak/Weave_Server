@@ -8,6 +8,24 @@ Write entries for the people running and using Weave, not only for developers. (
 version of this note said the server serves these to clients through `GET /api/changelog`;
 no such route was ever built, and the client now shows its own release notes instead.)
 
+## [0.1.41] - 2026-11-14
+
+### Changed
+- **Testers can server-mute** (`serverMute`, advertised as `moderation.tester-mute`). A tester
+  may mute members and other testers for a set time, never administrators and never until
+  lifted, and may lift only mutes they placed. A tester cannot mute over somebody else's mute
+  either, since that would replace it. Refusals use the new code `not_permitted`. Kick and
+  move stay administrator-only. Granting or removing Tester applies to a connected
+  tester straight away, as admin already does.
+
+### Removed
+- **What was left of the stream Good/Bad rating.** `/api/diagnostics` no longer gives
+  signed-in reporters a separate, higher limit: every report is held to the per-address
+  limit (**Reports accepted per address per hour**, default 6), and the **Reports accepted
+  per signed-in account per hour** setting is gone. Reports no longer carry a snapshot of
+  the server's load. A tester on an older client who still clicks Good or Bad is stored as
+  an ordinary report until they update, and ages out like any other.
+
 ## [0.1.40] - 2026-11-14
 
 ### Security

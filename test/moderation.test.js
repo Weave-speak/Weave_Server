@@ -366,6 +366,52 @@ test('removing somebody\'s administrator access stops them on the socket they al
     assert.equal((await live.expect('error')).code, 'forbidden');
 });
 
+test('a tester may server-mute, and nothing else an administrator does', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const tess = await h.mint('tess');
+    const wren = await h.mint('wren');
+    await h.call('POST', `/api/admin/members/${tess.user.id}/tester`, {
+        token: h.adminToken, body: { isTester: true },
+    });
+    const rooms = await h.call('GET', '/api/channels', { token: h.adminToken });
+    const voice = rooms.body.channels.filter((c) => c.kind !== 'text');
+
+    const live = await h.connect(tess.token);
+    await h.connect(wren.token, { channelId: voice[0].id });
+
+    live.send('serverMute', { userId: wren.user.id, minutes: 5 });
+    assert.equal((await live.expect('serverMuteChanged')).forceMuted, true);
+
+    live.send('kickPeer', { userId: wren.user.id });
+    assert.equal((await live.expect('error')).code, 'forbidden');
+    live.send('adminMove', { userId: wren.user.id, channelId: voice[1].id });
+    assert.equal((await live.expect('error')).code, 'forbidden');
+});
+
+test('removing somebody\'s tester flag stops their server mute on the socket they hold', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const tess = await h.mint('tess');
+    const wren = await h.mint('wren');
+    await h.call('POST', `/api/admin/members/${tess.user.id}/tester`, {
+        token: h.adminToken, body: { isTester: true },
+    });
+
+    const live = await h.connect(tess.token);
+    await h.connect(wren.token);
+    live.send('serverMute', { userId: wren.user.id, minutes: 5 });
+    await live.expect('serverMuteChanged');
+    live.send('serverMute', { userId: wren.user.id, muted: false });
+    await live.expect('serverMuteChanged');
+
+    await h.call('POST', `/api/admin/members/${tess.user.id}/tester`, {
+        token: h.adminToken, body: { isTester: false },
+    });
+    live.send('serverMute', { userId: wren.user.id, minutes: 5 });
+    assert.equal((await live.expect('error')).code, 'forbidden');
+});
+
 test('a server mute survives the muted person reconnecting', async (t) => {
     const h = await launch();
     t.after(() => h.stop());

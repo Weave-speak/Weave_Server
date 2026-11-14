@@ -1,6 +1,6 @@
 // Reporting a bug, and reading the reports.
 //
-// The endpoint already existed for update failures and stream-quality notes. What a bug
+// The endpoint already existed for update failures. What a bug
 // report adds is the part written by a person — and the thing worth testing is that both
 // sides of the moment end up in one file, so an administrator reads one report instead of
 // correlating a client's account of it against the server log by timestamp.
@@ -89,9 +89,8 @@ test('a bug report keeps what the person said, and what the server was doing', a
     assert.equal(report.log, 'renderer: consumer stalled');
     assert.equal(report.from.username, 'admin');
 
-    // Both sides of the moment, in one file: the server's load at receipt, and its own log
-    // around the same time.
-    assert.ok(typeof report.server.loadPerCore === 'number');
+    // Both sides of the moment, in one file: what they sent, and the server's own log around
+    // the same time.
     assert.ok(Array.isArray(report.serverLog) && report.serverLog.length > 0,
         "the server's own log is attached");
 });
@@ -128,10 +127,10 @@ test("only a bug report carries the server's log", async (t) => {
     const h = await launch();
     t.after(() => h.app.stop());
 
-    // A tester marks a moment often enough that attaching 300 lines to each would be a way
-    // to fill a disk, and an update failure has nothing to do with the server at all.
+    // An update failure happened on the client's machine and has nothing to do with what the
+    // server was doing, so it carries no server log.
     await h.call('POST', '/api/diagnostics', {
-        token: h.adminToken, body: { kind: 'stream-quality', log: '{"fps":3}' },
+        token: h.adminToken, body: { kind: 'update-failure', log: 'differential download failed' },
     });
     const [report] = h.stored();
     assert.equal(report.serverLog, undefined);

@@ -76,9 +76,9 @@ export function registerAuthRoutes({ router, db, log, auth, setup, settings, pee
             // second before /api/me lands.
             status: user.status ?? 'online',
             isAdmin: user.isAdmin,
-            // Whether this account sees the stream-quality reporting controls. Carried on
-            // the first response so the room can decide about them on the first paint,
-            // rather than briefly showing or hiding them until /api/me lands.
+            // Whether this account may server-mute people, as a tester. Carried on the first
+            // response so the room can decide about it on the first paint, rather than
+            // briefly showing or hiding the option until /api/me lands.
             isTester: user.isTester,
         },
     });

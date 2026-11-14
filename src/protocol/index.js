@@ -44,6 +44,10 @@ export const CORE_FEATURES = Object.freeze([
     // pressing them will do something — against an older server they are simply absent,
     // rather than present and failing.
     'moderation',
+    // A tester may server-mute too: timed mutes only, lifting only their own. Its own flag
+    // because a client offering a tester the entry against a server without it would only
+    // show them a refusal.
+    'moderation.tester-mute',
     // A profile picture and a declared status. Advertised because the client's profile
     // panel has carried "the server has no route for this yet" placeholders since it was
     // written, and it needs to know when that stopped being true.

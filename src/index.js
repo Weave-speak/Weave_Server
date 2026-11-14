@@ -89,9 +89,12 @@ export async function start(env = process.env) {
         log,
         config,
         onDisconnect: (sock, code) => departure.onSocketClosed(sock, code),
-        // The administrator gate asks the database rather than trusting the join-time
-        // snapshot, so removing somebody's admin flag takes effect on their open socket.
-        isAdmin: (userId) => getUserById(db, userId)?.isAdmin === true,
+        // The privileged gates ask the database rather than trusting the join-time snapshot,
+        // so granting or removing admin or tester takes effect on an open socket.
+        rolesOf: (userId) => {
+            const user = getUserById(db, userId);
+            return { isAdmin: user?.isAdmin === true, isTester: user?.isTester === true };
+        },
     });
 
     peers.onEnd = (peer, reason) => {

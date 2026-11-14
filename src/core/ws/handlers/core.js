@@ -809,13 +809,20 @@ export function registerCoreWsHandlers({
         send('adminMoved', { cid: first.cid, userId: first.userId, channel });
     }, { auth: 'admin' });
 
-    // ── admin: server mute ───────────────────────────────────────────────────
+    // ── admin and tester: server mute ────────────────────────────────────────
     //
     // Distinct from `setMute` in the one way that matters: the person it is applied to
     // cannot lift it. It is written to the database, so it survives their reconnecting,
     // and it is applied per ACCOUNT rather than per connection.
+    //
+    // Open to testers as well as administrators (the 'moderator' gate), with a tester held
+    // to a smaller version of it: a mute that always ends on its own, and lifting only what
+    // they placed themselves. An administrator's decision is never undone by a tester.
     registry.register('core', 'serverMute', async ({ ws, msg, send, fail }) => {
         const actor = peers.get(ws.cid);
+        // Freshly read by the gate, so a tester promoted or demoted mid-session is held to
+        // the role they have now.
+        const asAdmin = ws.session?.isAdmin === true;
         const targetId = String(msg.userId ?? '');
         if (!targetId) return fail(ws, 'no_user', 'Which account?');
         if (targetId === actor.userId) {
@@ -825,17 +832,40 @@ export function registerCoreWsHandlers({
         const target = getUserById(db, targetId);
         if (!target) return fail(ws, 'no_user', 'No such account.');
         // An administrator silencing another administrator is a fight the server should
-        // not referee, and it is the shape every mute-war starts as.
+        // not referee, and it is the shape every mute-war starts as. A tester silencing an
+        // administrator is simply outside what a tester is for.
         //
         // Its own code, not `forbidden`. Clients treat `forbidden` as the end of the
-        // session — it is what the gate says to somebody who is not an administrator at
+        // session — it is what the gate says to somebody who is not allowed the verb at
         // all — and an administrator who aimed at a colleague lost their own connection
         // with nothing on screen, which read as "the mute button does nothing".
         if (target.isAdmin) {
-            return fail(ws, 'target_is_admin', 'Administrators cannot server-mute one another.');
+            return fail(ws, 'target_is_admin', asAdmin
+                ? 'Administrators cannot server-mute one another.'
+                : 'Administrators cannot be server-muted.');
         }
 
         const wanted = msg.muted !== false;
+
+        if (!asAdmin) {
+            // `not_permitted` rather than `forbidden`: the tester is allowed the verb, just
+            // not this use of it, and the sentence says which edge they reached.
+            const standing = activeMute(db, targetId);
+            const someoneElses = standing && standing.byUserId !== actor.userId;
+            if (wanted && msg.minutes == null) {
+                return fail(ws, 'not_permitted', 'Only an administrator can mute until lifted.');
+            }
+            // Re-muting REPLACES the mute in force (see mute() in moderation/index.js), so
+            // without this a tester could swap an administrator's open-ended mute for a
+            // thirty-second one — which is lifting it, by another name.
+            if (wanted && someoneElses) {
+                return fail(ws, 'not_permitted', 'They are already server-muted by someone else.');
+            }
+            if (!wanted && someoneElses) {
+                return fail(ws, 'not_permitted', 'Only an administrator or whoever placed it can lift this mute.');
+            }
+        }
+
         // null minutes is the "until an administrator lifts it" form; anything else is
         // clamped, so a typo cannot mute somebody for a century.
         const minutes = msg.minutes == null ? null
@@ -857,7 +887,7 @@ export function registerCoreWsHandlers({
             `${actor.username} ${wanted ? 'server-muted' : 'un-server-muted'} ${target.username}`);
 
         send('serverMuteChanged', { userId: targetId, forceMuted: wanted, until });
-    }, { auth: 'admin' });
+    }, { auth: 'moderator' });
 
     // ── admin: kick ──────────────────────────────────────────────────────────
     //
