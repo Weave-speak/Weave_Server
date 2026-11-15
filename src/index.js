@@ -253,6 +253,8 @@ export async function start(env = process.env) {
         stopMediaReconcile();
         stopMuteExpiry();
         departure.stop();
+        // Before the database closes: a module's timers must not outlive the thing they read.
+        moduleHost.stopAll();
         await ws.close();
         await sfu.close();
         await new Promise((resolve) => server.close(resolve));

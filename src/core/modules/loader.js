@@ -322,6 +322,36 @@ export class ModuleHost {
         return true;
     }
 
+    /**
+     * The server is stopping: run every active module's cleanup, and nothing else.
+     *
+     * This is not `disable` applied to each module, and must not become it. `disable` is a
+     * decision — it writes `module.<id>.enabled = false` — and a shutdown is not a decision,
+     * so using it here would switch every module off for good on the next start.
+     *
+     * It exists because shutdown used to skip module cleanup entirely. The away-handling
+     * sweep (and every other module's timers) kept running after the database had been
+     * closed, and a minute later threw "The database connection is not open" from a timer
+     * nothing could catch — which failed whole test files, and would have taken down any
+     * process kept alive past `stop()`.
+     *
+     * Reverse activation order, so a module stops before the ones it depends on.
+     */
+    stopAll() {
+        for (const [id, active] of [...this.#active].reverse()) {
+            for (const dispose of active.disposers.reverse()) {
+                try {
+                    dispose();
+                } catch (err) {
+                    this.#log.error({ evt: 'module.dispose_failed', module: id, err },
+                        `Cleanup step failed while stopping ${id}`);
+                }
+            }
+            this.#deps.hooks.removeOwner(id);
+            this.#active.delete(id);
+        }
+    }
+
     async enable(id) {
         const manifest = this.#manifests.get(id);
         if (!manifest) throw new ModuleError(`No module named "${id}" is installed`);

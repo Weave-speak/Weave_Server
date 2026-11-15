@@ -101,6 +101,61 @@ test('disabling a module removes every trace of it', async (t) => {
     assert.equal(h.hooks.describe().length, 0, 'hook listener gone');
 });
 
+test('stopping the host runs every module\'s cleanup, dependents first', async (t) => {
+    // Shutdown skipped module cleanup altogether, so a module's timer kept running against
+    // a database the server had closed — the away sweep threw "database connection is not
+    // open" a minute after stop(), from a timer nothing could catch.
+    const h = harness();
+    t.after(h.cleanup);
+
+    const order = [];
+    globalThis.__stopOrder = order;
+    t.after(() => { delete globalThis.__stopOrder; });
+
+    const modDir = path.join(h.tmp, 'modules');
+    const body = (id) => `
+        export function register(ctx) {
+            ctx.onUnload(() => globalThis.__stopOrder.push('${id}'));
+        }
+    `;
+    writeModule(modDir, 'base', { body: body('base') });
+    writeModule(modDir, 'leaf', { requires: ['base'], body: body('leaf') });
+    h.host.discover(modDir);
+    await h.host.loadAll();
+    assert.deepEqual(h.host.enabled.sort(), ['base', 'leaf']);
+
+    h.host.stopAll();
+
+    assert.deepEqual(order, ['leaf', 'base'], 'a module stops before the one it depends on');
+    assert.deepEqual(h.host.enabled, []);
+});
+
+test('stopping the host is not a decision: the modules are all back on the next start', async (t) => {
+    // stopAll must not be disable-in-a-loop. disable() persists "enabled = false", and a
+    // shutdown that did the same would turn every module off for good.
+    const h = harness();
+    t.after(h.cleanup);
+
+    const modDir = path.join(h.tmp, 'modules');
+    writeModule(modDir, 'alpha');
+    h.host.discover(modDir);
+    await h.host.loadAll();
+
+    h.host.stopAll();
+
+    const host2 = new ModuleHost({
+        config: { disabledModules: [] },
+        log: createNullLogger(),
+        db: h.db, settings: h.settings, hooks: new HookBus(), admin: new AdminRegistry(),
+        http: { register: () => () => {} },
+        ws: { register: () => () => {}, send() {}, broadcast() {} },
+    });
+    host2.discover(modDir);
+    await host2.loadAll();
+
+    assert.deepEqual(host2.enabled, ['alpha'], 'a restart finds the module still enabled');
+});
+
 test('a disabled module can be re-enabled and works again', async (t) => {
     const h = harness();
     t.after(h.cleanup);
