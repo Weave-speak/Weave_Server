@@ -506,6 +506,23 @@ test('the heartbeat carries how long that machine has been untouched', async (t)
     assert.equal(peer().idleReportedAt, before);
 });
 
+/**
+ * The code a socket closes with, listened for FROM THE MOMENT THIS IS CALLED.
+ *
+ * Call it before the thing that causes the close, not after. A close is an event, not a
+ * state: the server shuts a replaced socket as part of handling the resume, and that
+ * event can arrive before the test has finished waiting on anything else. Attaching the
+ * listener afterwards then waits forever for something that already happened — it hung
+ * this whole file for a minute and took the four tests behind it down with it. The limit
+ * turns that same mistake into a failure that says what went wrong.
+ */
+function closeCode(ws, ms = 5000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('the socket was never closed')), ms);
+        ws.once('close', (code) => { clearTimeout(timer); resolve(code); });
+    });
+}
+
 /** Come back on a new socket claiming the peer an old one was standing as. */
 async function resume(h, token, channelId, key) {
     const c = await h.connect();
@@ -531,6 +548,7 @@ test('a reconnection claims the peer it was, rather than standing up a second on
 
     // The client gave up on that socket a minute ago. The server cannot know — no close
     // frame ever reached it — which is exactly the state the logs were full of.
+    const closed = closeCode(c.ws);
     const { c: back, joined } = await resume(h, h.adminToken, h.channels[0].id, first.resumeKey);
 
     assert.equal(joined.resumed, true);
@@ -544,8 +562,7 @@ test('a reconnection claims the peer it was, rather than standing up a second on
 
     // The socket that was replaced goes at once rather than lingering as a peer nobody
     // is driving until the heartbeat sweep gets to it.
-    const code = await new Promise((res) => c.ws.once('close', res));
-    assert.equal(code, 4002);
+    assert.equal(await closed, 4002);
 
     assert.notEqual(joined.resumeKey, first.resumeKey, 'and the spent key is not reusable');
 });
@@ -591,9 +608,10 @@ test('a resume tells the room nothing, because nothing happened', async (t) => {
     const first = await join(chris, memberToken, h.channels[0].id);
     assert.equal((await watcher.expect('peer_joined')).peer.username, 'chris');
 
+    const closed = closeCode(chris.ws);
     const { joined } = await resume(h, memberToken, h.channels[0].id, first.resumeKey);
     assert.equal(joined.resumed, true);
-    await new Promise((res) => chris.ws.once('close', res));
+    await closed;
 
     // Two round trips, so anything the resume was going to broadcast has had every chance
     // to arrive before the inbox is read.

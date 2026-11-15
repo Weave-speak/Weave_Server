@@ -42,10 +42,14 @@ export function tailLog(logDir, lines = 300) {
         fs.closeSync(fd);
     }
 
-    const entries = buffer.toString('utf8')
-        .split('\n')
-        // A partial first line is expected when reading from an offset.
-        .slice(1)
+    const text = buffer.toString('utf8').split('\n');
+    const entries = (size > window
+        // Only a read that STARTED PARTWAY INTO the file begins on a partial line. When the
+        // whole file fits in the window the read starts at byte 0, the first line is
+        // complete, and dropping it threw away the oldest line of every small log — and all
+        // of a one-line log, which is exactly what a freshly started server has written.
+        ? text.slice(1)
+        : text)
         .filter(Boolean)
         .slice(-wanted)
         .map((line) => { try { return JSON.parse(line); } catch { return { msg: line }; } });

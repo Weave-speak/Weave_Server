@@ -68,9 +68,31 @@ async function launch() {
     return { app, dir, call, mint, stored, adminToken: admin.body.token };
 }
 
+/**
+ * Wait until the server has written something to its log file.
+ *
+ * The file is written by a rotating-file transport that starts a moment AFTER the server
+ * is up: straight after launch the log directory is empty. A report filed in that gap
+ * has no server log to attach, which is correct — and which this test mistook for a
+ * failure on any machine fast enough to file the report first. A real report arrives
+ * minutes into a server's life, never in its first second.
+ */
+async function untilLogged(dir, ms = 10_000) {
+    const logs = path.join(dir, 'logs');
+    const written = () => fs.existsSync(logs) && fs.readdirSync(logs)
+        .some((f) => f.startsWith('weave.log') && fs.statSync(path.join(logs, f)).size > 0);
+
+    const deadline = Date.now() + ms;
+    while (!written()) {
+        assert.ok(Date.now() < deadline, 'the server never wrote its log file');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+}
+
 test('a bug report keeps what the person said, and what the server was doing', async (t) => {
     const h = await launch();
     t.after(() => h.app.stop());
+    await untilLogged(h.dir);
 
     const res = await h.call('POST', '/api/diagnostics', {
         token: h.adminToken,
