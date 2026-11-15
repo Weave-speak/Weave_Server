@@ -8,6 +8,22 @@ Write entries for the people running and using Weave, not only for developers. (
 version of this note said the server serves these to clients through `GET /api/changelog`;
 no such route was ever built, and the client now shows its own release notes instead.)
 
+## [0.1.42] - 2026-11-15
+
+### Added
+- **Profile banners** (advertised as `profile.banner`). A person can set a wide picture behind
+  their name on their profile card: `POST /api/me/banner` with the image bytes, and
+  `DELETE /api/me/banner` to remove it. It is checked and stored exactly like a profile
+  picture — by what the bytes are, under a fresh id in the avatars folder, served by
+  `GET /api/avatars/:id`, 2 MB at most — and a change reaches everybody in
+  `peer_profile_changed`, which now carries `banner`. Replacing or removing a banner never
+  touches the profile picture, or the other way round. Needs migration `011_banner`, which
+  runs on start.
+- **More on a profile.** `GET /api/users/:id` now also returns `banner`, `createdAt` (for
+  "joined …") and `isAdmin` (for the Admin badge), so the client can show somebody else's
+  profile card the way it shows your own. `GET /api/users` carries `banner`. Nothing else
+  about an account is exposed: no last-seen time, no tester flag.
+
 ## [0.1.41] - 2026-11-14
 
 ### Changed

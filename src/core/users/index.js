@@ -202,7 +202,7 @@ export function assertNameFree(db, name, exceptUserId = null) {
 // rendered as an em-dash for everyone, which looks like "nobody has ever signed in"
 // rather than "this field was never selected".
 const PUBLIC_COLUMNS = `
-    id, username, display_name AS displayName, avatar, status,
+    id, username, display_name AS displayName, avatar, banner, status,
     is_admin AS isAdmin, is_tester AS isTester, created_at AS createdAt, last_seen_at AS lastSeenAt
 `;
 
@@ -269,12 +269,13 @@ export const isStatus = (value) => STATUSES.includes(value);
 /**
  * Change what a person has published about themselves.
  *
- * Only the three fields a person owns. Everything else about an account — admin, disabled,
- * username — is somebody else's decision and belongs on the admin routes, so this cannot
- * be widened by passing extra keys. The display name is the one an administrator may
- * also set, and the admin rename comes through here so the two cannot drift apart.
+ * Only the fields a person owns: a status, a name, a picture and a banner. Everything else
+ * about an account — admin, disabled, username — is somebody else's decision and belongs on
+ * the admin routes, so this cannot be widened by passing extra keys. The display name is
+ * the one an administrator may also set, and the admin rename comes through here so the
+ * two cannot drift apart.
  */
-export function updateProfile(db, userId, { status, avatar, displayName } = {}) {
+export function updateProfile(db, userId, { status, avatar, banner, displayName } = {}) {
     const sets = [];
     const values = [];
 
@@ -299,6 +300,11 @@ export function updateProfile(db, userId, { status, avatar, displayName } = {}) 
     if (avatar !== undefined) {
         sets.push('avatar = ?');
         values.push(avatar === null ? null : String(avatar));
+    }
+    // The same rule for the same reason: null removes it.
+    if (banner !== undefined) {
+        sets.push('banner = ?');
+        values.push(banner === null ? null : String(banner));
     }
 
     if (sets.length) {

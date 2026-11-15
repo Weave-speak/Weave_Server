@@ -475,3 +475,101 @@ test('an administrator rename follows the same rules, and reaches every screen',
     const me = await h.call('GET', '/api/me', { token: kes.token });
     assert.equal(me.body.user.displayName, 'Kes');
 });
+
+// ── the banner ───────────────────────────────────────────────────────────────
+//
+// The avatar's arrangement, pointed at a second column: the same sniffing, the same
+// directory, the same read route. What is pinned here is mostly that the two never get
+// confused — replacing one must not delete the other's file.
+
+test('a banner is advertised, so a client only offers it where it works', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const info = await h.call('GET', '/api/server-info');
+    assert.ok(info.body.features.includes('profile.banner'));
+});
+
+test('a banner is stored beside the avatars, served by the same route, and reaches everybody', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const watcher = await h.connect(h.adminToken);
+    await h.connect(kes.token);
+
+    const up = await h.call('POST', '/api/me/banner', { token: kes.token, raw: PNG });
+    assert.equal(up.status, 201, JSON.stringify(up.body));
+    assert.match(up.body.banner, /^[0-9a-f-]{36}\.png$/);
+    assert.equal(up.body.user.banner, up.body.banner);
+    assert.equal(up.body.user.avatar, null, 'a banner is not a picture of you');
+
+    assert.ok(fs.existsSync(path.join(h.dataDir, 'avatars', up.body.banner)),
+        'outside uploads/, which is swept on a retention timer');
+    const got = await h.call('GET', `/api/avatars/${up.body.banner}`, { token: kes.token });
+    assert.equal(got.status, 200);
+    assert.equal(got.headers.get('content-type'), 'image/png');
+
+    const told = await watcher.expect('peer_profile_changed');
+    assert.equal(told.userId, kes.user.id);
+    assert.equal(told.banner, up.body.banner);
+
+    const roster = await h.call('GET', '/api/users', { token: h.adminToken });
+    assert.equal(roster.body.users.find((u) => u.id === kes.user.id).banner, up.body.banner);
+});
+
+test('what is not an image is refused as a banner too', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+
+    const script = Buffer.from('<script>alert(document.cookie)</script>       ', 'ascii');
+    const refused = await h.call('POST', '/api/me/banner', {
+        token: kes.token, raw: script, contentType: 'image/png',
+    });
+    assert.equal(refused.status, 415);
+    assert.equal((await h.call('POST', '/api/me/banner', { token: kes.token, raw: Buffer.alloc(0) })).status, 400);
+    assert.equal((await h.call('POST', '/api/me/banner', { raw: PNG })).status, 401, 'and only your own');
+});
+
+test('replacing or removing a banner leaves the picture alone, and the other way round', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const dir = path.join(h.dataDir, 'avatars');
+
+    const face = await h.call('POST', '/api/me/avatar', { token: kes.token, raw: PNG });
+    const first = await h.call('POST', '/api/me/banner', { token: kes.token, raw: PNG });
+    const second = await h.call('POST', '/api/me/banner', { token: kes.token, raw: GIF });
+
+    assert.ok(!fs.existsSync(path.join(dir, first.body.banner)), 'the replaced banner is gone');
+    assert.ok(fs.existsSync(path.join(dir, second.body.banner)));
+    assert.ok(fs.existsSync(path.join(dir, face.body.avatar)), 'and the picture is untouched');
+
+    const cleared = await h.call('DELETE', '/api/me/banner', { token: kes.token });
+    assert.equal(cleared.status, 200);
+    assert.equal(cleared.body.user.banner, null);
+    assert.equal(cleared.body.user.avatar, face.body.avatar);
+    assert.ok(!fs.existsSync(path.join(dir, second.body.banner)));
+    assert.ok(fs.existsSync(path.join(dir, face.body.avatar)));
+
+    const again = await h.call('POST', '/api/me/banner', { token: kes.token, raw: PNG });
+    await h.call('DELETE', '/api/me/avatar', { token: kes.token });
+    assert.ok(fs.existsSync(path.join(dir, again.body.banner)), 'removing the picture keeps the banner');
+});
+
+test('a profile shows when somebody joined and whether they run the server, and nothing private', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+
+    const them = await h.call('GET', `/api/users/${h.adminId}`, { token: kes.token });
+    assert.equal(them.status, 200);
+    assert.equal(them.body.user.isAdmin, true);
+    assert.ok(them.body.user.createdAt, 'the "joined" line needs a date');
+    assert.equal(them.body.user.banner, null);
+
+    const me = await h.call('GET', `/api/users/${kes.user.id}`, { token: h.adminToken });
+    assert.equal(me.body.user.isAdmin, false);
+    for (const key of ['lastSeenAt', 'isTester', 'isDisabled', 'passwordHash', 'recoveryHash']) {
+        assert.ok(!(key in me.body.user), `${key} is nobody else's business`);
+    }
+});

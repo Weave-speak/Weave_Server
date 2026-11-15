@@ -158,16 +158,23 @@ export function registerCoreRoutes(deps) {
     // HTTP method, with no authentication at all.
     router.register('core', 'GET', '/api/users', ({ json }) => {
         json(200, {
-            users: listUsers(db).map(({ id, username, displayName, avatar, status }) =>
-                ({ id, username, displayName, avatar, status })),
+            users: listUsers(db).map(({ id, username, displayName, avatar, banner, status }) =>
+                ({ id, username, displayName, avatar, banner: banner ?? null, status })),
         });
     });
 
+    // One person's profile card: the roster's fields, plus what the card shows that a
+    // roster has no use for. When they joined, and whether they run the server — the same
+    // badge their own card has always shown them, now shown to the people looking at it.
+    // Still nothing that is somebody else's business: no last-seen, no tester flag, no
+    // disabled state.
     router.register('core', 'GET', '/api/users/:id', ({ params, json }) => {
         const user = getUserById(db, params.id);
         if (!user) throw new HttpError(404, 'No such user.');
-        const { id, username, displayName, avatar, status } = user;
-        json(200, { user: { id, username, displayName, avatar, status } });
+        const { id, username, displayName, avatar, banner, status, createdAt, isAdmin } = user;
+        json(200, {
+            user: { id, username, displayName, avatar, banner: banner ?? null, status, createdAt, isAdmin },
+        });
     });
 
     // ── Modules ──────────────────────────────────────────────────────────────

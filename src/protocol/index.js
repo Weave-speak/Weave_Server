@@ -57,6 +57,10 @@ export const CORE_FEATURES = Object.freeze([
     // and answers 200 — a client trusting 'profile' would show a save that silently does
     // nothing.
     'profile.display-name',
+    // A banner picture behind a person's name on their profile card. Its own flag for the
+    // same reason as renaming: a client offering the upload against a server without the
+    // route would show a button whose only result is a 404.
+    'profile.banner',
     // Changing your own password and your own security question. Advertised because the
     // client's Security & Recovery screen has shown "needs a server update" since it was
     // drawn, and against a server without these routes that is still the honest thing for

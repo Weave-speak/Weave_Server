@@ -1,4 +1,4 @@
-// The two things a person owns about themselves: a status, and a picture.
+// What a person owns about themselves: a status, a name, a picture and a banner.
 //
 // In core rather than in a module because both are IDENTITY. A module can be switched off
 // and the server keeps working; a server where switching something off wipes everybody's
@@ -28,6 +28,13 @@ import { sniffImage, IMAGE_REFUSAL } from '../../media/image-type.js';
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
 /**
+ * A banner is wider, but the client still crops and re-encodes it to a fixed 1200x300 before
+ * sending — tens of kilobytes. The same ceiling leaves room for a GIF, and refuses the same
+ * camera.
+ */
+const MAX_BANNER_BYTES = 2 * 1024 * 1024;
+
+/**
  * Tell everyone the roster changed for this account.
  *
  * Per USER, because all of these are facts about an account rather than about one
@@ -50,6 +57,9 @@ export function announceProfile({ peers, ws }, user) {
     ws.broadcast('peer_profile_changed', {
         userId: user.id,
         avatar: user.avatar,
+        // Not copied onto the live peers above: nothing a connection signs carries a
+        // banner, so only the roster needs to hear about it.
+        banner: user.banner ?? null,
         status: user.status,
         displayName: user.displayName,
     });
@@ -123,6 +133,41 @@ export function registerProfileRoutes({ router, db, config, log, peers, ws }) {
     router.register('core', 'DELETE', '/api/me/avatar', ({ session, json }) => {
         const previous = getUserById(db, session.userId)?.avatar ?? null;
         const user = updateProfile(db, session.userId, { avatar: null });
+        removeAvatarFile(previous);
+        announce(user);
+        json(200, { user });
+    });
+
+    // ── the banner ───────────────────────────────────────────────────────────
+    //
+    // The picture behind a person's name on their profile card. Everything about it is the
+    // avatar's arrangement: sniffed rather than trusted, stored under a fresh id in the same
+    // directory, served by the same GET /api/avatars/:id below, and the old file removed only
+    // once the row points at the new one. A second directory and a second read route would
+    // be the same code twice, guarding the same thing.
+    router.register('core', 'POST', '/api/me/banner', ({ body, session, json }) => {
+        const buffer = Buffer.isBuffer(body) ? body : Buffer.alloc(0);
+        if (!buffer.length) throw new HttpError(400, 'No image was sent.');
+
+        const kind = sniffImage(buffer);
+        if (!kind) throw new HttpError(415, IMAGE_REFUSAL);
+
+        const previous = getUserById(db, session.userId)?.banner ?? null;
+        const id = `${crypto.randomUUID()}.${kind.ext}`;
+        fs.writeFileSync(path.join(dir, id), buffer);
+
+        const user = updateProfile(db, session.userId, { banner: id });
+        removeAvatarFile(previous);
+
+        announce(user);
+        log.info({ evt: 'banner.set', user: session.username, bytes: buffer.length },
+            `${session.username} set a profile banner (${(buffer.length / 1024).toFixed(0)} KB)`);
+        json(201, { user, banner: id, url: `/api/avatars/${id}` });
+    }, { rawBody: true, maxBytes: MAX_BANNER_BYTES });
+
+    router.register('core', 'DELETE', '/api/me/banner', ({ session, json }) => {
+        const previous = getUserById(db, session.userId)?.banner ?? null;
+        const user = updateProfile(db, session.userId, { banner: null });
         removeAvatarFile(previous);
         announce(user);
         json(200, { user });
