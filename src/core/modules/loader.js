@@ -268,6 +268,29 @@ export class ModuleHost {
             // somebody, but it cannot invent a new way for peers to change channel.
             actions: this.#deps.actions ?? {},
 
+            // Reaching a person's devices while their app is closed — a ring, a missed
+            // call. Only `toUser`: a module names an account and a payload, and never
+            // sees an endpoint, a key, or which devices exist. Without push (it failed to
+            // start, or a test built the host without it) this resolves having sent
+            // nothing, and it never throws or rejects: a module ringing somebody must not
+            // have its call fail over a phone. `available` is there for a module that
+            // wants to say so, not one that needs to check before sending.
+            push: (() => {
+                const deps = this.#deps;
+                const nothing = () => Promise.resolve({ sent: 0 });
+                return {
+                    get available() { return Boolean(deps.push); },
+                    toUser(userId, payload, opts) {
+                        if (!deps.push) return nothing();
+                        try {
+                            return Promise.resolve(deps.push.toUser(userId, payload, opts)).catch(nothing);
+                        } catch {
+                            return nothing();
+                        }
+                    },
+                };
+            })(),
+
             // Where a module may write. Narrow on purpose: a module gets the paths it
             // could legitimately need, not the whole config, so it cannot quietly come to
             // depend on how the server is exposed or which proxies are trusted.

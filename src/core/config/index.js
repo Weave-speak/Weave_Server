@@ -130,7 +130,7 @@ export const SCHEMA = [
     },
     {
         key: 'WEAVE_PUBLIC_URL', name: 'publicUrl', parse: String, default: null,
-        doc: 'Canonical origin of this server as seen by the outside world (e.g. https://weave.example.com). Used in invite deep links. When unset, the origin is derived from the Host header — safe behind a proxy, but forgeable without one.',
+        doc: 'Canonical origin of this server as seen by the outside world (e.g. https://weave.example.com). Used in invite deep links, and as the contact in Web Push requests when it is https. When unset, the origin is derived from the Host header — safe behind a proxy, but forgeable without one.',
     },
 ];
 

@@ -49,7 +49,8 @@ something.
 | `ctx.settings.define(key, schema, default)` | Typed settings; the admin console renders the form |
 | `ctx.hooks.on(event, fn)` / `.emit()` | How modules learn about anything |
 | `ctx.peers` | Read-only view of who is connected and where |
-| `ctx.actions` | A short named list — currently `movePeer`, `listChannels` |
+| `ctx.actions` | A short named list — currently `movePeer`, `listChannels`, `announceChannels` |
+| `ctx.push.toUser(userId, payload, { ttl, urgency, topic })`, `ctx.push.available` | Reach a person's devices while their app is closed. A module names an account and a JSON payload; it never sees an endpoint or a key. Never throws or rejects, and resolves `{ sent: 0 }` when push is not running. See [push.md](push.md) |
 | `ctx.paths` | `data`, `uploads`, `moduleDir` |
 | `ctx.admin.panel({...})` | An admin console section |
 | `ctx.onUnload(fn)` | Anything else that needs undoing — timers, watchers |
@@ -101,8 +102,8 @@ start if one changes underneath it. Add a new migration instead.
 | `slash-commands` | on | `/roll`, `/flip` — their own message type, so they work without chat |
 | `reactions` | on | Emoji reactions on channel messages. Requires `text-chat` |
 | `link-preview` | on | Server-fetched previews for links, refusing private addresses |
-| `dm` | on | One-to-one threads with history, read markers and calls |
-| `private-channels` | on | Members-only rooms any member can make |
+| `dm` | on | One-to-one threads with history, read markers and calls. Calls ring closed phones by push, and report missed calls |
+| `private-channels` | on | Members-only rooms any member can make. Starting one rings its other members ([push.md](push.md)) |
 | `diagnostics` | on | Bug reports from the client, with the server's own log attached |
 | `bubbles` | on | Admin-made photo bubbles that drift over the chat, each with its own conversation |
 | `sounds` | **off** | Join and leave sounds, and the birthday. Ships with an empty library |

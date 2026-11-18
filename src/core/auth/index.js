@@ -17,7 +17,32 @@ import { EXPOSURE } from '../config/index.js';
 
 /** Sliding window. An actively used session never lapses; only real inactivity does. */
 export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-const RENEW_BELOW_MS = SESSION_TTL_MS / 2;
+
+/**
+ * The window for a session a phone rings on (it holds a push subscription): see
+ * migration 012. Set by PUT /api/push/subscription, given back up when it goes.
+ */
+export const PUSH_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * SQL: the session aliased `s` is live at @now. A session lives until `expires_at`, and
+ * never longer than its window past its last use — which is what puts a session that lost
+ * its longer window back on the default one at once, rather than at its old expiry.
+ */
+export const SESSION_LIVE_SQL = `(s.expires_at > @now
+    AND COALESCE(s.last_used_at, s.expires_at) + COALESCE(s.idle_ttl_ms, ${SESSION_TTL_MS}) > @now)`;
+
+/** Give a session the longer idle window (`ttlMs`), or put it back on the default (null). */
+export function setSessionIdleTtl(db, tokenHash, ttlMs) {
+    const now = Date.now();
+    if (ttlMs) {
+        db.prepare('UPDATE sessions SET idle_ttl_ms = ?, expires_at = MAX(expires_at, ?), last_used_at = ? WHERE token_hash = ?')
+            .run(ttlMs, now + ttlMs, now, tokenHash);
+    } else {
+        db.prepare('UPDATE sessions SET idle_ttl_ms = NULL, expires_at = MIN(expires_at, ?) WHERE token_hash = ?')
+            .run(now + SESSION_TTL_MS, tokenHash);
+    }
+}
 
 export const ADMIN_COOKIE = 'weave_admin';
 
@@ -67,12 +92,12 @@ export function revokeAllForUserExcept(db, userId, tokenHash) {
  */
 export function listSessionsForUser(db, userId) {
     return db.prepare(`
-        SELECT id, kind, created_at AS createdAt, last_used_at AS lastUsedAt,
-               expires_at AS expiresAt, user_agent AS userAgent
-        FROM sessions
-        WHERE user_id = ? AND expires_at > ?
-        ORDER BY last_used_at DESC, created_at DESC
-    `).all(userId, Date.now());
+        SELECT s.id, s.kind, s.created_at AS createdAt, s.last_used_at AS lastUsedAt,
+               s.expires_at AS expiresAt, s.user_agent AS userAgent
+        FROM sessions s
+        WHERE s.user_id = @userId AND ${SESSION_LIVE_SQL}
+        ORDER BY s.last_used_at DESC, s.created_at DESC
+    `).all({ userId, now: Date.now() });
 }
 
 /**
@@ -111,7 +136,7 @@ export function resolveSession(db, token) {
     if (!token) return null;
 
     const row = db.prepare(`
-        SELECT s.id, s.token_hash, s.user_id, s.kind, s.expires_at, s.last_used_at,
+        SELECT s.id, s.token_hash, s.user_id, s.kind, s.expires_at, s.last_used_at, s.idle_ttl_ms,
                u.username, u.display_name, u.avatar, u.status, u.is_admin, u.is_tester, u.is_disabled
         FROM sessions s
         JOIN users u ON u.id = s.user_id
@@ -120,15 +145,20 @@ export function resolveSession(db, token) {
 
     if (!row) return null;
 
-    if (row.expires_at < Date.now()) {
+    // A phone that rings while closed idles on its own, longer window (see PUSH_SESSION_TTL_MS).
+    const now = Date.now();
+    const ttl = row.idle_ttl_ms ?? SESSION_TTL_MS;
+    if (Math.min(row.expires_at, (row.last_used_at ?? row.expires_at) + ttl) < now) {
         db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(row.token_hash);
         return null;
     }
     if (row.is_disabled) return null;
 
-    if (row.expires_at - Date.now() < RENEW_BELOW_MS) {
+    // Also when more life is left than the window allows: a session that just gave its
+    // longer window back is brought onto the default one here.
+    if (row.expires_at - now < ttl / 2 || row.expires_at - now > ttl) {
         db.prepare('UPDATE sessions SET expires_at = ?, last_used_at = ? WHERE token_hash = ?')
-            .run(Date.now() + SESSION_TTL_MS, Date.now(), row.token_hash);
+            .run(now + ttl, now, row.token_hash);
     } else if (Date.now() - (row.last_used_at ?? 0) > TOUCH_AFTER_MS) {
         db.prepare('UPDATE sessions SET last_used_at = ? WHERE token_hash = ?')
             .run(Date.now(), row.token_hash);
@@ -154,7 +184,8 @@ export function resolveSession(db, token) {
 }
 
 export function purgeExpiredSessions(db) {
-    return db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now()).changes;
+    return db.prepare(`DELETE FROM sessions WHERE token_hash IN (
+        SELECT s.token_hash FROM sessions s WHERE NOT ${SESSION_LIVE_SQL})`).run({ now: Date.now() }).changes;
 }
 
 function parseCookies(header) {

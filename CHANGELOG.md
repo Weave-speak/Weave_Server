@@ -8,6 +8,53 @@ Write entries for the people running and using Weave, not only for developers. (
 version of this note said the server serves these to clients through `GET /api/changelog`;
 no such route was ever built, and the client now shows its own release notes instead.)
 
+## [0.1.43] - 2026-11-17
+
+### Added
+- **Calls ring a phone whose app is closed** (advertised as `push.webpush`). The server now
+  speaks Web Push, so the Weave app can register its phone through a UnifiedPush distributor
+  such as ntfy and be rung while it is asleep. `GET /api/push/key` gives the server's
+  public key, and `PUT` / `DELETE /api/push/subscription` add or remove the signed-in
+  device. A device is registered to its session, so signing out — or being signed out from
+  another device, or by an administrator — stops it ringing straight away. Ring messages are
+  encrypted for the device; the distributor cannot read who is calling. The server needs to
+  reach the distributor over HTTPS; on a public server, endpoints on private or loopback
+  addresses are refused. Needs migration `012_push`, which runs on start and makes the
+  server's push key once.
+- **A registered phone stays signed in.** Sessions still lapse after 12 idle hours, except
+  for a device registered for push, which gets 30 idle days: otherwise a phone left closed
+  overnight would be signed out and silently stop ringing. Unregistering, or the
+  distributor dropping the device, puts it back on 12 hours.
+- **Missed calls.** A DM call that nobody answered, or that the caller hung up while it rang,
+  now reaches the other person's phone as a missed call they can call back from.
+- **Huddles ring their members.** The first person into an empty private room rings its other
+  members, on every device, including phones with the app closed. Coming in answers it, and a
+  member can decline it. If the person who started it leaves while still alone, the ring
+  stops, and whoever did not answer gets a missed call. Rooms ring at most once every five
+  minutes; Settings → Private rooms has **Ring members when a huddle starts** (`ringMembers`)
+  and **Ring a huddle at most once every (minutes)** (`ringCooldownMinutes`, up to 120).
+  Advertised as `channels.private.ring`; the module is now 1.1.0.
+- **Declining without the app open.** `POST /api/dm/threads/:id/call/decline` and
+  `POST /api/private-channels/:id/ring/decline`, each with `{ callId }`, decline a ring over
+  plain HTTP, for a phone answering a notification. Both answer `{ ok: true, ended }` and may
+  be repeated.
+- Every call now has an id (advertised as `dm.calls.ids`; the module is now 1.1.0):
+  `dm:ring` carries `callId` and `expiresAt`, and `dm:call_live` and `dm:call_ended` carry
+  `callId`. `dm:accept` and `dm:decline` accept an optional `callId`, so an answer to an old
+  ring cannot end a newer call.
+
+### Fixed
+- **Hanging up while it rang left the other person ringing.** A caller who left during the
+  ring did not end the call, so the other side rang on for up to 45 seconds and answering put
+  them in an empty room. It now ends at once, as `cancelled`. A caller sending `dm:decline`
+  is a cancel too, rather than reading as the other side declining.
+- A caller's second device joining a call that is still ringing no longer counts as the call
+  being answered.
+
+### Security
+- The admin table browser hides the server's push signing key, and treats a push
+  subscription's endpoint and keys like session tokens.
+
 ## [0.1.42] - 2026-11-15
 
 ### Added

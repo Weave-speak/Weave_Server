@@ -30,10 +30,19 @@ import { listActive as activeRestrictions } from '../../moderation/index.js';
  */
 const SECRET_COLUMNS = new Set([
     'password_hash', 'recovery_hash', 'token_hash', 'secret_phrase', 'totp_secret',
+    // A push subscription's copy of its session's token hash, under its own name.
+    'session_hash',
+    // The VAPID signing key, and a push subscription's endpoint and keys: the endpoint is
+    // the device's capability URL, and with the keys a message can be written that the
+    // phone will accept as this server's.
+    'private_key', 'endpoint', 'p256dh', 'auth',
 ]);
 
-/** Tables the browser refuses to touch at all. */
-const HIDDEN_TABLES = new Set(['_migrations']);
+/**
+ * Tables the browser refuses to touch at all. The VAPID key is here as well as secret:
+ * editing or deleting that one row silently stops every subscribed phone from ringing.
+ */
+const HIDDEN_TABLES = new Set(['_migrations', 'push_vapid']);
 
 const isSecret = (name) => SECRET_COLUMNS.has(String(name).toLowerCase());
 

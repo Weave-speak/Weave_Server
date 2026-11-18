@@ -9,6 +9,7 @@ import { registerAdminRoutes } from './admin.js';
 import { registerProfileRoutes } from './profile.js';
 import { registerAdminStatic } from '../static.js';
 import { registerInvitePage } from './invite-page.js';
+import { registerPushRoutes } from './push.js';
 import {
     listChannels, visibleChannels, getChannel, createChannel, updateChannel, deleteChannel,
     isMember, addMember, listMembers, ChannelError,
@@ -42,6 +43,7 @@ export function registerCoreRoutes(deps) {
     registerProfileRoutes(deps);
     registerAdminStatic(deps);
     registerInvitePage(deps);
+    registerPushRoutes(deps);
 
     // ── Channels ─────────────────────────────────────────────────────────────
     // Readable by any signed-in user: the client builds its sidebar from this rather

@@ -60,6 +60,26 @@ ssh codeine@192.168.0.50 'journalctl -u weave-dev -n 200 --no-pager | grep -E "t
 If it is happening to everyone at once rather than one person, suspect the announced
 address instead and read the section above.
 
+## A phone does not ring while Weave is closed
+
+Ringing a closed app goes by push, through the phone's distributor (ntfy). See
+[push.md](push.md).
+
+1. Is the phone registered? It is once it has signed in with a distributor installed. The
+   `push_subscriptions` table in the admin console's table browser has one row per
+   registered device, with `last_ok_at` set once a push has been delivered to it.
+2. Can the server reach the distributor? Each ring that did not go through logs
+   `push.failed` with the distributor's origin and the HTTP status or network error:
+
+   ```bash
+   sudo journalctl -u weave | grep -E "push\.(failed|gone)"
+   ```
+
+   `push.gone` means the distributor dropped that device; the row is deleted and the app
+   registers again the next time it opens.
+3. Signing out unregisters a device. That is deliberate: a phone that was signed out must
+   not ring.
+
 ## Locked out
 
 Being able to read the data directory is the authorisation, so no password is needed:

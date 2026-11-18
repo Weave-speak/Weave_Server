@@ -91,6 +91,10 @@ anyone who can reach the server directly can send it themselves — and an invit
 exactly the wrong thing to let a stranger choose the destination of. Setting this variable
 removes the question entirely.
 
+When it is an `https://` address it is also the contact sent with every push that rings a
+phone (the VAPID `sub`), so whoever runs a push distributor can tell whose server it is.
+Unset, or plain `http://`, and no contact is sent. See [push.md](push.md).
+
 ### `WEAVE_OPUS_BITRATE`
 
 Defaults to `96000`, which is what the Weave web app has run on for months. `64000` matches

@@ -259,3 +259,52 @@ test('a declined ring ends cleanly for both sides', async (t) => {
     assert.equal(ended.reason, 'declined');
     await b.expect('dm:call_ended');
 });
+
+test('a ring carries its call id, and a phone can decline it with no socket at all', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const thread = (await h.call('POST', '/api/dm/threads', {
+        token: h.adminToken, body: { userId: kes.user.id },
+    })).body.thread;
+
+    const a = await h.connect(h.adminToken);
+    const b = await h.connect(kes.token);
+    a.send('dm:call', { threadId: thread.id });
+    const ring = await b.expect('dm:ring');
+    assert.match(ring.callId, /^[A-Za-z0-9_-]{22}$/);
+    assert.ok(ring.expiresAt > Date.now() && ring.expiresAt <= Date.now() + 45_000);
+    await a.expect('moved');
+
+    const stale = await h.call('POST', `/api/dm/threads/${thread.id}/call/decline`, {
+        token: kes.token, body: { callId: 'AAAAAAAAAAAAAAAAAAAAAA' },
+    });
+    assert.deepEqual(stale.body, { ok: true, ended: false }, 'a stale decline cannot end this call');
+
+    const res = await h.call('POST', `/api/dm/threads/${thread.id}/call/decline`, {
+        token: kes.token, body: { callId: ring.callId },
+    });
+    assert.deepEqual(res.body, { ok: true, ended: true });
+    const ended = await a.expect('dm:call_ended');
+    assert.deepEqual(ended, { type: 'dm:call_ended', threadId: thread.id, callId: ring.callId, reason: 'declined' });
+});
+
+test('a caller hanging up during the ring stops it ringing', async (t) => {
+    const h = await launch();
+    t.after(() => h.stop());
+    const kes = await h.mint('kestrel');
+    const thread = (await h.call('POST', '/api/dm/threads', {
+        token: h.adminToken, body: { userId: kes.user.id },
+    })).body.thread;
+
+    const a = await h.connect(h.adminToken);
+    const b = await h.connect(kes.token);
+    a.send('dm:call', { threadId: thread.id });
+    const ring = await b.expect('dm:ring');
+    await a.expect('moved');
+    a.send('leave');
+    const ended = await b.expect('dm:call_ended');
+    assert.equal(ended.callId, ring.callId);
+    assert.equal(ended.reason, 'cancelled');
+});
+

@@ -28,6 +28,7 @@ import { watchMuteExpiry } from './core/moderation/sweep.js';
 import { ensureDefaults, listChannels, visibleChannels } from './core/channels/index.js';
 import { registerCoreRoutes } from './core/http/routes/index.js';
 import { createSfu } from './core/sfu/index.js';
+import { createPush } from './core/push/index.js';
 import { PeerRegistry } from './core/peers/index.js';
 import { createDeparture } from './core/peers/departure.js';
 import { registerCoreWsHandlers } from './core/ws/handlers/core.js';
@@ -76,6 +77,15 @@ export async function start(env = process.env) {
     const admin = new AdminRegistry();
     const auth = createAuth({ db, config, log });
     const setup = new SetupState({ db, config, log });
+    // Web Push: ringing a phone whose app is asleep. Optional by construction — a failure
+    // here costs rings-while-closed, never the server — so it is caught rather than fatal,
+    // and everything downstream treats a missing push as "send nothing".
+    let push = null;
+    try {
+        push = createPush({ db, log, subject: vapidSubject(config.publicUrl), exposure: config.exposure });
+    } catch (err) {
+        log.error({ evt: 'push.unavailable', err }, 'Push could not start; calls will ring only open apps');
+    }
 
     // ── Media ────────────────────────────────────────────────────────────────
     const sfu = await createSfu({ config, log, hooks });
@@ -166,12 +176,12 @@ export async function start(env = process.env) {
     };
 
     const moduleHost = new ModuleHost({
-        config, log, db, settings, hooks, admin, peers, actions: moduleActions,
+        config, log, db, settings, hooks, admin, peers, actions: moduleActions, push,
         http: httpFacade,
         ws: wsFacade,
     });
 
-    registerCoreRoutes({ router, db, config, log, auth, setup, hooks, moduleHost, sfu, peers, settings, ws: wsFacade });
+    registerCoreRoutes({ router, db, config, log, auth, setup, hooks, moduleHost, sfu, peers, settings, push, ws: wsFacade });
     // One enforcer, shared by the handler that applies a mute and the sweep that lifts an
     // expired one, so the two cannot drift into doing different things.
     const applyForceMute = createEnforcer({ peers, ws });
@@ -255,6 +265,9 @@ export async function start(env = process.env) {
         departure.stop();
         // Before the database closes: a module's timers must not outlive the thing they read.
         moduleHost.stopAll();
+        // After the modules, whose last act may be a cancel or missed-call push: those are
+        // abandoned rather than allowed to hold the process past the watchdog.
+        push?.stop();
         await ws.close();
         await sfu.close();
         await new Promise((resolve) => server.close(resolve));
@@ -311,10 +324,26 @@ export async function start(env = process.env) {
 
     return {
         config, log, db, settings, hooks, router, wsRegistry, admin, moduleHost, auth, setup,
-        sfu, peers, server, ws,
+        sfu, peers, server, ws, push,
         migrations: migrationStatus(db),
         stop,
     };
+}
+
+/**
+ * The VAPID contact: this server's public https origin, or nothing.
+ *
+ * RFC 8292 asks for a way for a push service's operator to reach whoever is sending. The
+ * server's own address is honest and already configured; an invented mailto: would not be.
+ * A plain-http or unset URL gives no contact at all, which the RFC permits.
+ */
+function vapidSubject(publicUrl) {
+    try {
+        const url = new URL(publicUrl);
+        return url.protocol === 'https:' ? url.origin : null;
+    } catch {
+        return null;
+    }
 }
 
 /**

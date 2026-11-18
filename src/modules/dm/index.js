@@ -240,13 +240,65 @@ export function register(ctx) {
      * it by the call state instead), members exactly the pair. Everything else rides
      * proven machinery: the move guards, the SFU router per channel, the client's
      * stage — which is what makes camera and screen share work in calls for free.
+     *
+     * The ring also goes by push, so a phone whose app is asleep rings too. Every call
+     * carries a `callId` for that: the same ring reaches one device over the socket AND
+     * by push, and a phone told "cancel" must know which ring it means — a thread can be
+     * rung, hung up and rung again faster than a push service delivers.
      */
 
     const RING_MS = 45_000;
-    const calls = new Map();   // threadId -> { channelId, state: 'ringing'|'live', ringTimer }
+    /** A missed call is worth hearing about a day late; a ring is not worth a second late. */
+    const MISSED_TTL_S = 24 * 60 * 60;
+    // threadId -> { callId, callerId, calleeId, channelId, state: 'ringing'|'live', ringTimer,
+    //              startedAt, expiresAt, from }
+    const calls = new Map();
+
+    // 128 bits in base64url is 22 characters, inside RFC 8030's 32-character Topic, so the
+    // id can double as the push topic that lets a cancel replace its own held ring.
+    const newCallId = () => crypto.randomBytes(16).toString('base64url');
 
     const toUser = (userId, type, payload) => {
         for (const peer of ctx.peers.forUser(userId)) ctx.ws.send(peer.ws, type, payload);
+    };
+
+    /**
+     * Tell the callee's devices, by push, what became of a ring. Only ever the callee: the
+     * caller's app is open by definition, and is told over its socket.
+     */
+    const pushToCallee = (call, threadId, kind, reason) => {
+        const payload = {
+            v: 1,
+            kind,
+            callId: call.callId,
+            call: { type: 'dm', threadId },
+            from: call.from,
+            expiresAt: call.expiresAt,
+            ...(reason ? { reason } : {}),
+        };
+        // A ring and its cancel are worth nothing once the ring would have stopped anyway, and
+        // a cancel is as urgent as the ring it stops. The topic is shared by all three, so
+        // a push service still holding the ring for an offline phone replaces it.
+        const opts = kind === 'missed'
+            ? { ttl: MISSED_TTL_S, urgency: 'normal', topic: call.callId }
+            : { ttl: Math.max(1, Math.ceil((call.expiresAt - Date.now()) / 1000)), urgency: 'high', topic: call.callId };
+        ctx.push.toUser(call.calleeId, payload, opts).catch(() => {});
+    };
+
+    /**
+     * The call is (still) live. Sent again when it already is, because a second device of
+     * the callee's joining needs its own `call_live` to know it is in a call.
+     */
+    const goLive = (thread, call) => {
+        const answering = call.state === 'ringing';
+        clearTimeout(call.ringTimer);
+        call.state = 'live';
+        for (const userId of [thread.user_a, thread.user_b]) {
+            toUser(userId, 'call_live', { threadId: thread.id, callId: call.callId });
+        }
+        // Answered — possibly on this very phone, possibly on the callee's laptop. Either
+        // way every other device of theirs must stop ringing.
+        if (answering) pushToCallee(call, thread.id, 'ring_cancel', 'answered');
     };
 
     const endCall = (threadId, reason) => {
@@ -257,8 +309,15 @@ export function register(ctx) {
         const thread = threadById.get(threadId);
         if (thread) {
             for (const userId of [thread.user_a, thread.user_b]) {
-                toUser(userId, 'call_ended', { threadId, reason });
+                toUser(userId, 'call_ended', { threadId, callId: call.callId, reason });
             }
+        }
+        // A ring that ended without an answer reaches the callee's sleeping devices too. A
+        // refusal only needs the ringing stopped; nobody answered and nobody refused is a
+        // missed call, which is the one the phone keeps for later with a Call back.
+        if (call.state === 'ringing') {
+            const missed = reason === 'no_answer' || reason === 'cancelled';
+            pushToCallee(call, threadId, missed ? 'missed' : 'ring_cancel', reason);
         }
         // The room dies once nobody is standing in it; clients leave on call_ended.
         const sweep = () => {
@@ -274,6 +333,27 @@ export function register(ctx) {
         }
     };
 
+    /**
+     * The ringing call a decline from `userId` may end, or null.
+     *
+     * `callId` is optional, for clients that predate it, but honoured when given: a phone
+     * declining from a notification can be late, and a stale decline must not hang up a
+     * NEW call on the same thread.
+     */
+    const ringingFor = (threadId, userId, callId) => {
+        const thread = threadById.get(String(threadId ?? ''));
+        if (!thread || !isParty(thread, userId)) return null;
+        const call = calls.get(thread.id);
+        if (!call || call.state !== 'ringing') return null;
+        if (callId !== undefined && callId !== null && String(callId) !== call.callId) return null;
+        return { thread, call };
+    };
+
+    /** The caller hanging up is a cancel; the callee refusing is a decline. */
+    const decline = ({ thread, call }, userId) => {
+        endCall(thread.id, userId === call.callerId ? 'cancelled' : 'declined');
+    };
+
     ctx.ws.on('call', ({ ws, msg, fail }) => {
         const peer = ctx.peers.get(ws.cid);
         if (!peer) return;
@@ -282,15 +362,11 @@ export function register(ctx) {
 
         const existing = calls.get(thread.id);
         if (existing) {
-            // Joining a call that is already ringing or live is answering it.
+            // Joining a call that is already ringing or live is answering it — when the
+            // callee does it. The caller doing it from a second device is only moving the
+            // call to that device; it must not mark the call answered and stop the ring.
             ctx.actions.movePeer(peer.cid, existing.channelId, 'dm-call');
-            if (existing.state === 'ringing') {
-                existing.state = 'live';
-                clearTimeout(existing.ringTimer);
-                for (const userId of [thread.user_a, thread.user_b]) {
-                    toUser(userId, 'call_live', { threadId: thread.id });
-                }
-            }
+            if (existing.state === 'ringing' && peer.userId === existing.calleeId) goLive(thread, existing);
             return;
         }
 
@@ -304,15 +380,37 @@ export function register(ctx) {
         addMember(db, channel.id, thread.user_a, peer.userId);
         addMember(db, channel.id, thread.user_b, peer.userId);
 
+        const startedAt = Date.now();
+        const expiresAt = startedAt + RING_MS;
         const ringTimer = setTimeout(() => endCall(thread.id, 'no_answer'), RING_MS);
         ringTimer.unref?.();
-        calls.set(thread.id, { channelId: channel.id, state: 'ringing', ringTimer });
-
-        ctx.actions.movePeer(peer.cid, channel.id, 'dm-call');
-        toUser(otherOf(thread, peer.userId), 'ring', {
-            threadId: thread.id,
+        const call = {
+            callId: newCallId(),
+            callerId: peer.userId,
+            calleeId: otherOf(thread, peer.userId),
+            channelId: channel.id,
+            state: 'ringing',
+            ringTimer,
+            startedAt,
+            expiresAt,
             from: { username: peer.username, displayName: peer.displayName ?? peer.username },
+        };
+        calls.set(thread.id, call);
+
+        if (!ctx.actions.movePeer(peer.cid, channel.id, 'dm-call')) {
+            // Nobody to ring on behalf of: unwind before the callee hears anything.
+            calls.delete(thread.id);
+            clearTimeout(ringTimer);
+            try { deleteChannel(db, channel.id); } catch { /* already gone */ }
+            return fail(ws, 'call_failed', 'The call could not be started.');
+        }
+        toUser(call.calleeId, 'ring', {
+            threadId: thread.id,
+            callId: call.callId,
+            from: call.from,
+            expiresAt,
         });
+        pushToCallee(call, thread.id, 'ring');
         ctx.log.info({ evt: 'dm.call', from: peer.username }, `${peer.username} started a private call`);
     });
 
@@ -321,32 +419,57 @@ export function register(ctx) {
         if (!peer) return;
         const thread = threadById.get(String(msg.threadId ?? ''));
         const call = thread && calls.get(thread.id);
-        if (!thread || !call || !isParty(thread, peer.userId)) return fail(ws, 'no_call', 'That call is over.');
+        const stale = call && msg.callId !== undefined && msg.callId !== null && String(msg.callId) !== call.callId;
+        if (!thread || !call || stale || !isParty(thread, peer.userId)) return fail(ws, 'no_call', 'That call is over.');
 
-        clearTimeout(call.ringTimer);
-        call.state = 'live';
         ctx.actions.movePeer(peer.cid, call.channelId, 'dm-call');
-        for (const userId of [thread.user_a, thread.user_b]) {
-            toUser(userId, 'call_live', { threadId: thread.id });
-        }
+        // The caller's own second device accepting is moving the call there, not answering.
+        if (call.state === 'live' || peer.userId === call.calleeId) goLive(thread, call);
     });
 
     ctx.ws.on('decline', ({ ws, msg }) => {
         const peer = ctx.peers.get(ws.cid);
-        const thread = peer && threadById.get(String(msg.threadId ?? ''));
-        if (!thread || !isParty(thread, peer.userId)) return;
-        if (calls.get(thread.id)?.state === 'ringing') endCall(thread.id, 'declined');
+        if (!peer) return;
+        const ringing = ringingFor(msg.threadId, peer.userId, msg.callId);
+        if (ringing) decline(ringing, peer.userId);
     });
 
-    // A live call whose room loses a participant is over; the other side is told rather
-    // than left talking to a router. Ringing calls keep their lone caller waiting.
+    // Declining from a phone's notification, with no app running to hold a socket. The
+    // phone's background half has a session token and nothing else, so this is plain HTTP.
+    //
+    // Idempotent for the two people in the thread: a decline that arrives after the call
+    // was answered, ended, or replaced by a newer one is not an error — the phone only
+    // wants the ringing gone — so it answers `ended: false`. The callId is required here,
+    // unlike on the socket: this route's only caller is a notification, which always has
+    // one, and a decline without it could end a call the person never saw. Anyone else
+    // gets the same 404 as a thread that does not exist.
+    ctx.http.route('POST', '/api/dm/threads/:id/call/decline', ({ session, params, body, json }) => {
+        const thread = threadById.get(params.id);
+        if (!thread || !isParty(thread, session.userId)) {
+            return json(404, { error: 'no_thread', message: 'No such thread.' });
+        }
+        const callId = typeof body?.callId === 'string' ? body.callId : '';
+        if (!callId) return json(400, { error: 'no_call_id', message: 'Name the call to decline.' });
+        const ringing = ringingFor(thread.id, session.userId, callId);
+        if (ringing) decline(ringing, session.userId);
+        json(200, { ok: true, ended: Boolean(ringing) });
+    }, { maxBytes: 1_000 });
+
+    /**
+     * A call whose room has emptied out of the side that was in it is over.
+     *
+     * Live: down to one, the other side is told rather than left talking to a router.
+     * Ringing: the caller is the only one inside, so the room emptying means they hung up
+     * — moved away, left voice, or signed off. That used to be skipped, which left the
+     * callee ringing for the rest of 45 seconds into an empty room; answering then put
+     * them in it alone.
+     */
     const watch = ({ peer, from }) => {
         for (const [threadId, call] of calls) {
-            if (call.state !== 'live') continue;
-            if (from === call.channelId || peer?.channelId === call.channelId) {
-                const inside = ctx.peers.inChannel(call.channelId).length;
-                if (inside <= 1) endCall(threadId, 'left');
-            }
+            if (from !== call.channelId && peer?.channelId !== call.channelId) continue;
+            const inside = ctx.peers.inChannel(call.channelId).length;
+            if (call.state === 'live' && inside <= 1) endCall(threadId, 'left');
+            else if (call.state === 'ringing' && inside === 0) endCall(threadId, 'cancelled');
         }
     };
     ctx.hooks.on(HOOKS.PEER_MOVE, watch);

@@ -4,9 +4,10 @@
 // no-text rule) so that disabling this module can never expose anyone. What this module
 // owns is what makes huddles huddles: anyone may start one, and an empty one does not
 // hang around — a room that has stood unoccupied past the window is deleted, roster
-// announced, gone.
+// announced, gone. And starting one rings the people it is for (ring.js).
 
 import { deleteChannel, getChannel } from '../../core/channels/index.js';
+import { registerHuddleRing } from './ring.js';
 
 const SWEEP_EVERY_MS = 10 * 60 * 1000;
 
@@ -43,4 +44,6 @@ export function register(ctx) {
     const timer = setInterval(sweep, SWEEP_EVERY_MS);
     timer.unref?.();
     ctx.onUnload(() => clearInterval(timer));
+
+    registerHuddleRing(ctx);
 }

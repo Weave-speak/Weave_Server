@@ -70,6 +70,11 @@ export const CORE_FEATURES = Object.freeze([
     // riding on account.security, because it needed a migration: a client talking to a
     // server that has the password routes but not this one must still be told the truth.
     'account.sessions',
+    // Web Push: /api/push/key and /api/push/subscription, and rings that reach a phone
+    // whose app is closed. A device registered for push stays signed in for 30 idle days
+    // rather than 12 hours, so it keeps ringing overnight. Without this flag a client
+    // rings only while its app holds a socket, as every client did before.
+    'push.webpush',
 ]);
 
 export class ProtocolMismatchError extends Error {

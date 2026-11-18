@@ -7,6 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -379,4 +380,34 @@ test('a server always keeps at least one channel', async (t) => {
 
     assert.equal(remaining, 1, 'the final channel cannot be deleted');
     assert.equal(lastStatus, 400);
+});
+
+test('push: advertised, subscribed per session, and gone the moment that session signs out', async (t) => {
+    const h = await launch();
+    t.after(h.cleanup);
+    const token = await bootstrapAdmin(h);
+
+    const info = await h.call('GET', '/api/server-info');
+    assert.ok(info.body.features.includes('push.webpush'), info.body.features.join(','));
+
+    const key = await h.call('GET', '/api/push/key', { token });
+    assert.equal(key.status, 200);
+    assert.equal(Buffer.from(key.body.publicKey, 'base64url').length, 65);
+
+    const ecdh = crypto.createECDH('prime256v1');
+    ecdh.generateKeys();
+    const subscription = {
+        endpoint: 'https://push.example.net/up/device-1',
+        keys: { p256dh: ecdh.getPublicKey().toString('base64url'), auth: crypto.randomBytes(16).toString('base64url') },
+    };
+    const put = await h.call('PUT', '/api/push/subscription', { token, body: subscription });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    const count = () => h.app.db.prepare('SELECT COUNT(*) AS n FROM push_subscriptions').get().n;
+    assert.equal(count(), 1);
+    const window = h.app.db.prepare('SELECT MAX(idle_ttl_ms) AS ttl FROM sessions').get().ttl;
+    assert.equal(window, 30 * 24 * 60 * 60 * 1000, 'a registered phone stays signed in while closed');
+
+    const out = await h.call('POST', '/api/auth/logout', { token });
+    assert.equal(out.status, 200);
+    assert.equal(count(), 0, 'signing out took the subscription with it');
 });
